@@ -1901,6 +1901,8 @@ interface TrendingTopicItem {
   formatTip: string;
   searchQuery: string;
   exploreUrl: string;
+  visualTheme: "short_clips" | "tech_howto" | "entertainment" | "sports_live";
+  thumbnailUrl: string;
 }
 
 interface TrendingCacheEntry {
@@ -1965,6 +1967,46 @@ function buildPlatformSearchUrl(platform: string, searchQuery: string): string {
   if (p.includes("linkedin")) return `https://www.linkedin.com/search/results/content/?keywords=${q}`;
   if (p.includes("pinterest")) return `https://www.pinterest.com/search/pins/?q=${q}`;
   return `https://www.youtube.com/results?search_query=${q}`;
+}
+
+const TRENDING_THUMBNAILS: Record<"short_clips" | "tech_howto" | "entertainment" | "sports_live", string> = {
+  short_clips: "/static/images/trending_short_clips.jpg",
+  tech_howto: "/static/images/trending_tech_howto.jpg",
+  entertainment: "/static/images/trending_entertainment.jpg",
+  sports_live: "/static/images/trending_sports_live.jpg",
+};
+
+const TRENDING_THEME_CYCLE: Array<"short_clips" | "tech_howto" | "entertainment" | "sports_live"> = [
+  "short_clips",
+  "tech_howto",
+  "entertainment",
+  "sports_live",
+];
+
+function resolveTrendingVisualTheme(
+  filterCategory: string,
+  topicCategory: string,
+  title: string,
+  description: string,
+  index: number
+): "short_clips" | "tech_howto" | "entertainment" | "sports_live" {
+  const text = `${topicCategory} ${title} ${description}`.toLowerCase();
+  if (/(sport|match|football|soccer|basketball|nba|goal|highlight|fitness|workout|training|stadium|race|live event)/i.test(text)) {
+    return "sports_live";
+  }
+  if (/(tech|ai |code|coding|tutorial|how-to|howto|setup|review|camera|editing|gadget|software|desk|workflow)/i.test(text)) {
+    return "tech_howto";
+  }
+  if (/(music|podcast|song|concert|comedy|film|movie|creator commentary|behind-the-scenes|interview|audio|acoustic)/i.test(text)) {
+    return "entertainment";
+  }
+  if (/(reel|short|tiktok|recipe|cook|vlog|snippet|challenge|viral clip|diy)/i.test(text)) {
+    return "short_clips";
+  }
+  if (filterCategory === "short_clips" || filterCategory === "tech_howto" || filterCategory === "entertainment" || filterCategory === "sports_live") {
+    return filterCategory;
+  }
+  return TRENDING_THEME_CYCLE[index % TRENDING_THEME_CYCLE.length];
 }
 
 function normalizePlatformLabel(raw: string): string {
@@ -2081,17 +2123,23 @@ async function generateTrendingTopics(lang: string, category: string, forceFresh
       const topics: TrendingTopicItem[] = rawTopics
         .filter((item) => item && typeof item.title === "string" && item.title.trim())
         .slice(0, 6)
-        .map((item) => {
+        .map((item, idx) => {
           const platform = normalizePlatformLabel(String(item.platform || "YouTube"));
           const searchQuery = String(item.searchQuery || item.title || "").trim().slice(0, 80);
+          const title = String(item.title || "").trim().slice(0, 120);
+          const description = String(item.description || "").trim().slice(0, 260);
+          const topicCategory = String(item.category || "Trending").trim().slice(0, 48);
+          const visualTheme = resolveTrendingVisualTheme(category, topicCategory, title, description, idx);
           return {
-            title: String(item.title || "").trim().slice(0, 120),
-            description: String(item.description || "").trim().slice(0, 260),
+            title,
+            description,
             platform,
-            category: String(item.category || "Trending").trim().slice(0, 48),
+            category: topicCategory,
             formatTip: String(item.formatTip || "Best Quality MP4").trim().slice(0, 64),
             searchQuery,
             exploreUrl: buildPlatformSearchUrl(platform, searchQuery),
+            visualTheme,
+            thumbnailUrl: TRENDING_THUMBNAILS[visualTheme],
           };
         });
 

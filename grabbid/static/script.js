@@ -1641,6 +1641,39 @@
     return `https://www.youtube.com/results?search_query=${encodeURIComponent(fallbackQuery || "trending video")}`;
   }
 
+  const TRENDING_THUMBNAILS = {
+    short_clips: "/static/images/trending_short_clips.jpg",
+    tech_howto: "/static/images/trending_tech_howto.jpg",
+    entertainment: "/static/images/trending_entertainment.jpg",
+    sports_live: "/static/images/trending_sports_live.jpg",
+  };
+
+  function resolveTrendingThemeKey(topic) {
+    const rawTheme = String(topic && topic.visualTheme ? topic.visualTheme : "").toLowerCase();
+    if (TRENDING_THUMBNAILS[rawTheme]) {
+      return rawTheme;
+    }
+    const text = `${(topic && topic.category) || ""} ${(topic && topic.platform) || ""} ${(topic && topic.title) || ""}`.toLowerCase();
+    if (/tech|how|tutorial|setup|gadget|code|ai|review|productiv|linkedin/.test(text)) {
+      return "tech_howto";
+    }
+    if (/sport|live|match|highlight|fitness|run|workout|twitch|gaming|stream|esport/.test(text)) {
+      return "sports_live";
+    }
+    if (/short|reel|tiktok|snapchat|thread|snack|mini|vlog/.test(text)) {
+      return "short_clips";
+    }
+    return "entertainment";
+  }
+
+  function getTrendingThumbnail(topic) {
+    const candidate = topic && typeof topic.thumbnailUrl === "string" ? topic.thumbnailUrl.trim() : "";
+    if (candidate && (/^\/static\/images\//i.test(candidate) || /^https:\/\//i.test(candidate))) {
+      return candidate;
+    }
+    return TRENDING_THUMBNAILS[resolveTrendingThemeKey(topic)];
+  }
+
   function createExternalArrowIcon() {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -1662,14 +1695,80 @@
     return svg;
   }
 
+  function createPlayGlyphIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "20");
+    svg.setAttribute("height", "20");
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+
+    const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    poly.setAttribute("points", "7 4 20 12 7 20 7 4");
+    svg.appendChild(poly);
+    return svg;
+  }
+
   function renderTrendingCards(topics) {
     if (!trendingGrid) return;
     trendingGrid.replaceChildren();
 
-    topics.forEach((topic) => {
+    topics.forEach((topic, index) => {
       const card = document.createElement("article");
       card.className = "trending-card";
       card.setAttribute("role", "listitem");
+
+      const safeExploreUrl = getSafeExploreUrl(topic.exploreUrl, topic.searchQuery || topic.title);
+      const themeKey = resolveTrendingThemeKey(topic);
+      const platformText = topic.platform || "YouTube";
+
+      const thumbLink = document.createElement("a");
+      thumbLink.className = "trending-thumb-link";
+      thumbLink.href = safeExploreUrl;
+      thumbLink.target = "_blank";
+      thumbLink.rel = "noopener noreferrer";
+      thumbLink.setAttribute("aria-label", `${topic.title || "Trending video"} — ${platformText}`);
+
+      const thumbImg = document.createElement("img");
+      thumbImg.className = `trending-thumb-img trending-thumb-img--pos-${index % 3}`;
+      thumbImg.src = getTrendingThumbnail(topic);
+      thumbImg.alt = `${platformText} — ${topic.title || "Trending video topic"}`;
+      thumbImg.loading = "lazy";
+      thumbImg.decoding = "async";
+      thumbImg.setAttribute("referrerpolicy", "no-referrer");
+
+      const thumbFallback = document.createElement("div");
+      thumbFallback.className = `trending-thumb-fallback trending-thumb-fallback--${themeKey}`;
+      thumbFallback.hidden = true;
+      thumbFallback.appendChild(createPlayGlyphIcon());
+
+      thumbImg.addEventListener("error", () => {
+        thumbImg.hidden = true;
+        thumbFallback.hidden = false;
+      });
+
+      const thumbScrim = document.createElement("span");
+      thumbScrim.className = "trending-thumb-scrim";
+      thumbScrim.setAttribute("aria-hidden", "true");
+
+      const thumbPlay = document.createElement("span");
+      thumbPlay.className = "trending-thumb-play";
+      thumbPlay.setAttribute("aria-hidden", "true");
+      thumbPlay.appendChild(createPlayGlyphIcon());
+
+      const thumbPlatform = document.createElement("span");
+      thumbPlatform.className = "trending-thumb-platform";
+      thumbPlatform.textContent = platformText;
+      thumbPlatform.appendChild(createExternalArrowIcon());
+
+      thumbLink.appendChild(thumbImg);
+      thumbLink.appendChild(thumbFallback);
+      thumbLink.appendChild(thumbScrim);
+      thumbLink.appendChild(thumbPlay);
+      thumbLink.appendChild(thumbPlatform);
+
+      const cardInner = document.createElement("div");
+      cardInner.className = "trending-card-inner";
 
       const body = document.createElement("div");
       body.className = "trending-card-body";
@@ -1679,7 +1778,7 @@
 
       const platformEl = document.createElement("span");
       platformEl.className = "trending-card-platform";
-      platformEl.textContent = topic.platform || "YouTube";
+      platformEl.textContent = platformText;
 
       const sepEl = document.createElement("span");
       sepEl.className = "sep";
@@ -1718,7 +1817,7 @@
 
       const exploreLink = document.createElement("a");
       exploreLink.className = "trending-explore-link";
-      exploreLink.href = getSafeExploreUrl(topic.exploreUrl, topic.searchQuery || topic.title);
+      exploreLink.href = safeExploreUrl;
       exploreLink.target = "_blank";
       exploreLink.rel = "noopener noreferrer";
       const exploreLabel = document.createElement("span");
@@ -1750,8 +1849,11 @@
       actions.appendChild(exploreLink);
       actions.appendChild(copyBtn);
 
-      card.appendChild(body);
-      card.appendChild(actions);
+      cardInner.appendChild(body);
+      cardInner.appendChild(actions);
+
+      card.appendChild(thumbLink);
+      card.appendChild(cardInner);
       trendingGrid.appendChild(card);
     });
 

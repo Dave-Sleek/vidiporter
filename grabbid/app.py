@@ -1756,6 +1756,37 @@ _TRENDING_CATEGORY_FOCUS = {
 }
 
 
+_TRENDING_THUMBNAILS = {
+    "short_clips": "/static/images/trending_short_clips.jpg",
+    "tech_howto": "/static/images/trending_tech_howto.jpg",
+    "entertainment": "/static/images/trending_entertainment.jpg",
+    "sports_live": "/static/images/trending_sports_live.jpg",
+}
+
+_TRENDING_THEME_CYCLE = ("short_clips", "tech_howto", "entertainment", "sports_live")
+
+
+def _resolve_trending_visual_theme(
+    filter_category: str,
+    topic_category: str,
+    title: str,
+    description: str,
+    index: int,
+) -> str:
+    text = f"{topic_category} {title} {description}".lower()
+    if re.search(r"(sport|match|football|soccer|basketball|nba|goal|highlight|fitness|workout|training|stadium|race|live event)", text):
+        return "sports_live"
+    if re.search(r"(tech|ai |code|coding|tutorial|how-to|howto|setup|review|camera|editing|gadget|software|desk|workflow)", text):
+        return "tech_howto"
+    if re.search(r"(music|podcast|song|concert|comedy|film|movie|creator commentary|behind-the-scenes|interview|audio|acoustic)", text):
+        return "entertainment"
+    if re.search(r"(reel|short|tiktok|recipe|cook|vlog|snippet|challenge|viral clip|diy)", text):
+        return "short_clips"
+    if filter_category in _TRENDING_THUMBNAILS:
+        return filter_category
+    return _TRENDING_THEME_CYCLE[index % len(_TRENDING_THEME_CYCLE)]
+
+
 def _normalize_platform_label(raw: str) -> str:
     p = (raw or "").strip().lower()
     if "youtube" in p:
@@ -1911,15 +1942,21 @@ def _fetch_gemini_trending(lang: str, category: str, force_fresh: bool) -> dict:
             continue
         platform = _normalize_platform_label(str(item.get("platform") or "YouTube"))
         search_query = str(item.get("searchQuery") or item.get("title") or "").strip()[:80]
+        title_str = str(item.get("title") or "").strip()[:120]
+        desc_str = str(item.get("description") or "").strip()[:260]
+        cat_str = str(item.get("category") or "Trending").strip()[:48]
+        visual_theme = _resolve_trending_visual_theme(category, cat_str, title_str, desc_str, len(topics))
         topics.append(
             {
-                "title": str(item.get("title") or "").strip()[:120],
-                "description": str(item.get("description") or "").strip()[:260],
+                "title": title_str,
+                "description": desc_str,
                 "platform": platform,
-                "category": str(item.get("category") or "Trending").strip()[:48],
+                "category": cat_str,
                 "formatTip": str(item.get("formatTip") or "Best Quality MP4").strip()[:64],
                 "searchQuery": search_query,
                 "exploreUrl": _build_platform_search_url(platform, search_query),
+                "visualTheme": visual_theme,
+                "thumbnailUrl": _TRENDING_THUMBNAILS[visual_theme],
             }
         )
         if len(topics) >= 6:
