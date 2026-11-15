@@ -3373,7 +3373,7 @@
   };
 
   const SUPPORTED_LANGUAGES = [
-    { code: "en", flag: "\u{1F1FA}\u{1F1F8}", label: "English" },
+    { code: "en", flag: "", label: "English" },
     { code: "es", flag: "\u{1F1EA}\u{1F1F8}", label: "Espa\u00F1ol" },
     { code: "fr", flag: "\u{1F1EB}\u{1F1F7}", label: "Fran\u00E7ais" },
     { code: "de", flag: "\u{1F1E9}\u{1F1EA}", label: "Deutsch" },
@@ -3399,11 +3399,32 @@
     SUPPORTED_LANGUAGES.forEach((item) => {
       const opt = document.createElement("option");
       opt.value = item.code;
-      opt.textContent = `${item.flag} ${item.label}`;
+      opt.textContent = item.flag ? `${item.flag} ${item.label}` : item.label;
       fragment.appendChild(opt);
     });
     selectEl.innerHTML = "";
     selectEl.appendChild(fragment);
+  }
+
+  function fitLangSelectWidth(selectEl) {
+    if (!selectEl || typeof document.createElement !== "function") return;
+    const selectedOption = selectEl.options[selectEl.selectedIndex];
+    const labelText = selectedOption ? selectedOption.textContent || "" : "";
+    if (!labelText) return;
+    try {
+      const canvas = fitLangSelectWidth._canvas || (fitLangSelectWidth._canvas = document.createElement("canvas"));
+      const ctx = canvas.getContext && canvas.getContext("2d");
+      if (!ctx) return;
+      const computed = window.getComputedStyle ? window.getComputedStyle(selectEl) : null;
+      const font = computed
+        ? `${computed.fontWeight || "600"} ${computed.fontSize || "13px"} ${computed.fontFamily || "sans-serif"}`
+        : "600 13px sans-serif";
+      ctx.font = font;
+      const measured = Math.ceil(ctx.measureText(labelText).width);
+      selectEl.style.width = `${Math.max(58, Math.min(152, measured + 22))}px`;
+    } catch (_) {
+      // Ignore measurement errors
+    }
   }
 
   function getSavedLanguage() {
@@ -3448,8 +3469,11 @@
     });
 
     const langSelect = document.getElementById("langSelect");
-    if (langSelect && langSelect.value !== normalized) {
-      langSelect.value = normalized;
+    if (langSelect) {
+      if (langSelect.value !== normalized) {
+        langSelect.value = normalized;
+      }
+      fitLangSelectWidth(langSelect);
     }
 
     const themeLabel = document.getElementById("themeLabel");
@@ -3472,6 +3496,7 @@
     if (langSelect) {
       populateLangSelect(langSelect);
       langSelect.value = currentLang;
+      fitLangSelectWidth(langSelect);
       langSelect.addEventListener("change", (event) => {
         applyTranslations(event.target.value);
       });
