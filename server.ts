@@ -1944,8 +1944,18 @@ const TRENDING_LANG_NAMES: Record<string, string> = {
   fr: "French",
   de: "German",
   pt: "Portuguese",
+  it: "Italian",
+  nl: "Dutch",
+  pl: "Polish",
+  ru: "Russian",
+  tr: "Turkish",
   ar: "Arabic",
   hi: "Hindi",
+  id: "Indonesian",
+  vi: "Vietnamese",
+  th: "Thai",
+  ja: "Japanese",
+  ko: "Korean",
   zh: "Simplified Chinese",
 };
 
