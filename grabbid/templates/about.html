@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About Vidiporter — Anonymous Social Video Downloader</title>
+  <meta
+    name="description"
+    content="Discover how Vidiporter extracts and merges public social media videos into MP4 or audio with zero accounts, zero tracking, and zero storage."
+  />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#6c5ce7" />
+  <link rel="canonical" id="canonicalLink" href="https://vidiporter.app/about" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Vidiporter" />
+  <meta property="og:url" id="ogUrlMeta" content="https://vidiporter.app/about" />
+  <meta property="og:title" content="About Vidiporter — Anonymous Social Video Downloader" />
+  <meta
+    property="og:description"
+    content="Discover how Vidiporter extracts and merges public social media videos into MP4 or audio with zero accounts, zero tracking, and zero storage."
+  />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="About Vidiporter — Anonymous Social Video Downloader" />
+  <meta
+    name="twitter:description"
+    content="Discover how Vidiporter extracts and merges public social media videos into MP4 or audio with zero accounts, zero tracking, and zero storage."
+  />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a href="/" class="brand-link">Vidiporter</a>
+
+      <nav class="main-nav" aria-label="Primary navigation">
+        <a href="/" class="nav-link" data-i18n="nav.home">Home</a>
+        <a href="/how-to-use" class="nav-link" data-i18n="nav.how_to_use">How to Use</a>
+        <a href="/about" class="nav-link is-active" data-i18n="nav.about">About</a>
+        <a href="/privacy" class="nav-link" data-i18n="nav.privacy">Privacy Policy</a>
+        <a href="/terms" class="nav-link" data-i18n="nav.terms">Terms</a>
+      </nav>
+
+      <div class="header-controls">
+        <label class="lang-picker" for="langSelect">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path>
+            <path d="M2 12h20"></path>
+          </svg>
+          <span class="sr-only" data-i18n="nav.language">Language</span>
+          <select id="langSelect" class="lang-select" aria-label="Select language">
+            <option value="en">English</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="pt">Português</option>
+            <option value="ar">العربية</option>
+            <option value="hi">हिन्दी</option>
+            <option value="zh">中文</option>
+          </select>
+        </label>
+
+        <button type="button" id="themeToggle" class="theme-toggle" aria-label="Toggle light or dark mode" aria-pressed="false">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+          <span id="themeLabel" class="theme-label" data-i18n="theme.light">Light</span>
+        </button>
+
+        <button type="button" id="menuToggle" class="menu-toggle" aria-label="Open navigation menu" aria-expanded="false" aria-controls="mobileDrawer">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <nav id="mobileDrawer" class="mobile-drawer" aria-label="Mobile navigation" hidden>
+      <a href="/" class="nav-link" data-i18n="nav.home">Home</a>
+      <a href="/how-to-use" class="nav-link" data-i18n="nav.how_to_use">How to Use</a>
+      <a href="/about" class="nav-link is-active" data-i18n="nav.about">About</a>
+      <a href="/privacy" class="nav-link" data-i18n="nav.privacy">Privacy Policy</a>
+      <a href="/terms" class="nav-link" data-i18n="nav.terms">Terms</a>
+    </nav>
+  </header>
+
+  <main class="main-container">
+    <article class="page-article">
+      <header class="article-header">
+        <p class="section-kicker" data-i18n="about.kicker">About Vidiporter</p>
+        <h1 class="article-title" data-i18n="about.title">Fast, anonymous public video downloading</h1>
+        <p class="article-lead" data-i18n="about.lead">
+          Vidiporter is a lightweight web tool built for journalists, researchers, editors, and everyday users who need an offline copy of publicly shared social media videos.
+        </p>
+      </header>
+
+      <section class="article-section">
+        <h2 data-i18n="about.mission_title">Our Design Philosophy</h2>
+        <p data-i18n="about.mission_p">
+          Most online video downloaders are cluttered with pop-ups, misleading download buttons, forced logins, or tracking scripts. Vidiporter takes the opposite approach: a single clean interface, transparent format selection, zero accounts, and zero database tracking.
+        </p>
+      </section>
+
+      <section class="article-section">
+        <h2 data-i18n="about.tech_title">How It Works Under the Hood</h2>
+        <p data-i18n="about.tech_p">
+          Vidiporter pairs a lightweight backend with yt-dlp for metadata extraction and ffmpeg for lossless container merging. When you request a video, the server fetches only the stream you selected into an isolated temporary folder, streams it to your browser, and deletes the temporary folder immediately.
+        </p>
+      </section>
+
+      <section class="article-section">
+        <h2 data-i18n="about.platforms_title">Supported Networks</h2>
+        <p data-i18n="about.platforms_p">
+          Public videos from Facebook, Instagram, X (Twitter), LinkedIn, Threads, TikTok, YouTube, Pinterest, Snapchat, Twitch clips, and hundreds of other public media sites.
+        </p>
+      </section>
+
+      <a href="/" class="primary-cta-link" data-i18n="about.cta">Try the Downloader</a>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <a href="/" class="footer-logo">Vidiporter</a>
+        <p class="footer-disclaimer" data-i18n="footer.notice">
+          Only public content is supported. Respect copyright and platform terms of service.
+        </p>
+      </div>
+
+      <div class="footer-columns">
+        <div class="footer-col">
+          <h3 class="footer-col-title" data-i18n="footer.nav_product">Product</h3>
+          <a href="/" data-i18n="nav.home">Home</a>
+          <a href="/how-to-use" data-i18n="nav.how_to_use">How to Use</a>
+          <a href="/about" data-i18n="nav.about">About</a>
+        </div>
+        <div class="footer-col">
+          <h3 class="footer-col-title" data-i18n="footer.nav_legal">Legal</h3>
+          <a href="/privacy" data-i18n="nav.privacy">Privacy Policy</a>
+          <a href="/terms" data-i18n="nav.terms">Terms</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script src="/static/i18n.js"></script>
+  <script src="/static/script.js"></script>
+</body>
+</html>

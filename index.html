@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vidiporter — Free Social Media Video Downloader</title>
+    <meta
+      name="description"
+      content="Paste any public video URL from Facebook, Instagram, X, TikTok, YouTube, or LinkedIn and download HD MP4 or audio anonymously with Vidiporter."
+    />
+    <meta
+      name="keywords"
+      content="Vidiporter, social media video downloader, download Instagram reels, download TikTok video, X video downloader, Facebook video downloader, MP4 downloader"
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="author" content="Vidiporter" />
+    <meta name="theme-color" content="#6c5ce7" />
+
+    <link rel="canonical" id="canonicalLink" href="https://vidiporter.app/" />
+
+    <!-- OpenGraph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Vidiporter" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:url" id="ogUrlMeta" content="https://vidiporter.app/" />
+    <meta property="og:title" content="Vidiporter — Free Social Media Video Downloader" />
+    <meta
+      property="og:description"
+      content="Paste any public video URL from Facebook, Instagram, X, TikTok, YouTube, or LinkedIn and download HD MP4 or audio anonymously with Vidiporter."
+    />
+
+    <!-- Twitter / X Cards -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Vidiporter — Free Social Media Video Downloader" />
+    <meta
+      name="twitter:description"
+      content="Paste any public video URL from Facebook, Instagram, X, TikTok, YouTube, or LinkedIn and download HD MP4 or audio anonymously with Vidiporter."
+    />
+
+    <!-- Schema.org Structured Data (JSON-LD) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebApplication",
+            "name": "Vidiporter",
+            "url": "https://vidiporter.app/",
+            "applicationCategory": "MultimediaApplication",
+            "operatingSystem": "All",
+            "browserRequirements": "Requires JavaScript",
+            "description": "Paste any public video URL from Facebook, Instagram, X, TikTok, YouTube, or LinkedIn and download HD MP4 or audio anonymously with Vidiporter.",
+            "featureList": [
+              "Download public videos in MP4",
+              "Automatic HD video and audio merging with ffmpeg",
+              "Audio-only extraction in M4A and WebM",
+              "Anonymous usage with zero accounts or database",
+              "Multi-language interface"
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD"
+            }
+          }
+        ]
+      }
+    </script>
+    <script>
+      (function () {
+        var currentUrl = window.location.origin + window.location.pathname;
+        var canonical = document.getElementById("canonicalLink");
+        var ogUrl = document.getElementById("ogUrlMeta");
+        if (canonical) canonical.setAttribute("href", currentUrl);
+        if (ogUrl) ogUrl.setAttribute("content", currentUrl);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

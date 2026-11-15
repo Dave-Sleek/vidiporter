@@ -1,0 +1,6 @@
+{
+  "name": "GrabVid",
+  "description": "Download public videos from Facebook, Instagram, X, LinkedIn, Threads, TikTok, YouTube, and more.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
