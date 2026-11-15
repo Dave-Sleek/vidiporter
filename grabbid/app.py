@@ -1182,6 +1182,27 @@ def terms():
     return render_seo_page("terms.html")
 
 
+@app.get("/sitemap.xml")
+def sitemap_xml():
+    sitemap_path = os.path.join(BASE_DIR, "static", "sitemap.xml")
+    with open(sitemap_path, "r", encoding="utf-8") as fh:
+        xml = fh.read()
+    origin = html_lib.escape(get_site_origin(), quote=True)
+    resp = Response(xml.replace("https://vidiporter.app", origin), mimetype="application/xml")
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    robots_path = os.path.join(BASE_DIR, "static", "robots.txt")
+    with open(robots_path, "r", encoding="utf-8") as fh:
+        txt = fh.read()
+    resp = Response(txt.replace("https://vidiporter.app", get_site_origin()), mimetype="text/plain")
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
 @app.post("/api/info")
 def api_info():
     allowed, retry_after = check_rate_limit()

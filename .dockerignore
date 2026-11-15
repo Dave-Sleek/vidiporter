@@ -1,0 +1,13 @@
+node_modules
+dist
+build
+coverage
+.git
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+cookies.txt
+grabbid/cookies.txt
+grabbid/__pycache__

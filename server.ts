@@ -111,20 +111,31 @@ async function ensureYtDlpBinary(): Promise<string> {
   if (ytdlpReadyPromise) return ytdlpReadyPromise;
 
   ytdlpReadyPromise = (async () => {
-    try {
-      await fsp.access(YTDLP_LOCAL_BIN, fs.constants.X_OK);
-      return YTDLP_LOCAL_BIN;
-    } catch {
-      // Download standalone yt-dlp_linux binary
-      const resp = await fetch(YTDLP_RELEASE_URL, { redirect: "follow" });
-      if (!resp.ok) {
-        throw new Error(`Failed to fetch yt-dlp binary (${resp.status})`);
+    const preinstalledCandidates = [
+      (process.env.YTDLP_BIN || "").trim(),
+      "/usr/local/bin/yt-dlp",
+      "/usr/bin/yt-dlp",
+      YTDLP_LOCAL_BIN,
+    ].filter(Boolean);
+
+    for (const candidate of preinstalledCandidates) {
+      try {
+        await fsp.access(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {
+        // Try next candidate
       }
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      await fsp.writeFile(YTDLP_LOCAL_BIN, buffer, { mode: 0o755 });
-      await fsp.chmod(YTDLP_LOCAL_BIN, 0o755);
-      return YTDLP_LOCAL_BIN;
     }
+
+    // Download standalone yt-dlp_linux binary into temp dir as fallback
+    const resp = await fetch(YTDLP_RELEASE_URL, { redirect: "follow" });
+    if (!resp.ok) {
+      throw new Error(`Failed to fetch yt-dlp binary (${resp.status})`);
+    }
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    await fsp.writeFile(YTDLP_LOCAL_BIN, buffer, { mode: 0o755 });
+    await fsp.chmod(YTDLP_LOCAL_BIN, 0o755);
+    return YTDLP_LOCAL_BIN;
   })();
 
   try {
@@ -1851,8 +1862,35 @@ app.get("/privacy", (req: Request, res: Response) => {
   void sendSeoPage(req, res, "privacy.html");
 });
 
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+app.get("/sitemap.xml", async (req: Request, res: Response) => {
+  const xml = await fsp.readFile(path.join(STATIC_DIR, "sitemap.xml"), "utf-8");
+  const origin = escapeXml(getSiteOrigin(req));
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.type("application/xml; charset=utf-8").send(xml.replaceAll("https://vidiporter.app", origin));
+});
+
+app.get("/robots.txt", async (req: Request, res: Response) => {
+  const txt = await fsp.readFile(path.join(STATIC_DIR, "robots.txt"), "utf-8");
+  const origin = getSiteOrigin(req);
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.type("text/plain; charset=utf-8").send(txt.replaceAll("https://vidiporter.app", origin));
+});
+
 app.get("/terms", (req: Request, res: Response) => {
   void sendSeoPage(req, res, "terms.html");
+});
+
+app.get("/healthz", (_req: Request, res: Response) => {
+  res.json({ ok: true });
 });
 
 interface TrendingTopicItem {
