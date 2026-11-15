@@ -10,10 +10,10 @@
   --text-primary: #f4f5f7;
   --text-secondary: #a7acb8;
   --text-muted: #787e8d;
-  --accent: #5b4ff0;
-  --accent-hover: #6c61f5;
-  --accent-active: #4c40dd;
-  --accent-soft: rgba(91, 79, 240, 0.14);
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+  --accent-active: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.16);
   --error-bg: rgba(239, 68, 68, 0.11);
   --error-border: rgba(239, 68, 68, 0.34);
   --error-text: #fca5a5;
@@ -39,10 +39,10 @@ html[data-theme="light"] {
   --text-primary: #111318;
   --text-secondary: #4a505e;
   --text-muted: #697080;
-  --accent: #5044e5;
-  --accent-hover: #4338ca;
-  --accent-active: #3730a3;
-  --accent-soft: rgba(80, 68, 229, 0.1);
+  --accent: #1d4ed8;
+  --accent-hover: #1e40af;
+  --accent-active: #1e3a8a;
+  --accent-soft: rgba(29, 78, 216, 0.1);
   --error-bg: #fef2f2;
   --error-border: #fecaca;
   --error-text: #b91c1c;
@@ -65,7 +65,7 @@ body {
   font-family: var(--font-sans);
   background-color: var(--bg-page);
   background-image:
-    radial-gradient(56rem 28rem at 82% -4%, rgba(91, 79, 240, 0.09), transparent 64%);
+    radial-gradient(56rem 28rem at 82% -4%, rgba(37, 99, 235, 0.09), transparent 64%);
   background-repeat: no-repeat;
   color: var(--text-primary);
   line-height: 1.58;
@@ -79,7 +79,7 @@ body {
 
 html[data-theme="light"] body {
   background-image:
-    radial-gradient(56rem 28rem at 82% -4%, rgba(80, 68, 229, 0.06), transparent 64%);
+    radial-gradient(56rem 28rem at 82% -4%, rgba(29, 78, 216, 0.06), transparent 64%);
 }
 
 a {
@@ -1212,7 +1212,7 @@ html[dir="rtl"] .input-actions {
 
 .format-card--best,
 .format-card--hd {
-  border-color: rgba(108, 92, 231, 0.38);
+  border-color: rgba(37, 99, 235, 0.42);
 }
 
 .format-card--sd {
@@ -1643,11 +1643,11 @@ html[dir="rtl"] .input-actions {
   align-items: center;
   justify-content: center;
   color: rgba(255, 255, 255, 0.85);
-  background: linear-gradient(135deg, #252048 0%, #141724 100%);
+  background: linear-gradient(135deg, #1b2e4b 0%, #121622 100%);
 }
 
 .trending-thumb-fallback--short_clips {
-  background: linear-gradient(135deg, #3b1e54 0%, #161826 100%);
+  background: linear-gradient(135deg, #1e3a5f 0%, #131824 100%);
 }
 
 .trending-thumb-fallback--tech_howto {

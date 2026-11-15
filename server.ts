@@ -188,6 +188,20 @@ function isPrivateIp(hostname: string): boolean {
   return false;
 }
 
+function isBlockedYouTubeHost(hostname: string): boolean {
+  const clean = hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+  return (
+    clean === "youtube.com" ||
+    clean.endsWith(".youtube.com") ||
+    clean === "youtu.be" ||
+    clean.endsWith(".youtu.be") ||
+    clean === "youtube-nocookie.com" ||
+    clean.endsWith(".youtube-nocookie.com") ||
+    clean === "youtubekids.com" ||
+    clean.endsWith(".youtubekids.com")
+  );
+}
+
 function validateUrl(rawUrl: unknown): { ok: true; url: string } | { ok: false; error: string } {
   if (typeof rawUrl !== "string") {
     return { ok: false, error: "Please provide a valid video URL." };
@@ -221,6 +235,14 @@ function validateUrl(rawUrl: unknown): { ok: true; url: string } | { ok: false; 
 
   if (net.isIP(host) === 0 && !host.includes(".")) {
     return { ok: false, error: "URL must include a valid public domain name." };
+  }
+
+  if (isBlockedYouTubeHost(host)) {
+    return {
+      ok: false,
+      error:
+        "YouTube downloads are temporarily disabled. Please use a public link from Facebook, Instagram, X, TikTok, LinkedIn, Threads, Snapchat, Pinterest, or Twitch.",
+    };
   }
 
   return { ok: true, url };
@@ -1953,7 +1975,6 @@ function buildPlatformSearchUrl(platform: string, searchQuery: string): string {
   const cleanQuery = (searchQuery || "").trim() || "trending video";
   const q = encodeURIComponent(cleanQuery);
   const p = (platform || "").toLowerCase();
-  if (p.includes("youtube")) return `https://www.youtube.com/results?search_query=${q}`;
   if (p.includes("tiktok")) return `https://www.tiktok.com/search?q=${q}`;
   if (p.includes("instagram")) {
     const tag = cleanQuery.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -1966,7 +1987,7 @@ function buildPlatformSearchUrl(platform: string, searchQuery: string): string {
   if (p.includes("facebook")) return `https://www.facebook.com/watch/search/?q=${q}`;
   if (p.includes("linkedin")) return `https://www.linkedin.com/search/results/content/?keywords=${q}`;
   if (p.includes("pinterest")) return `https://www.pinterest.com/search/pins/?q=${q}`;
-  return `https://www.youtube.com/results?search_query=${q}`;
+  return `https://www.tiktok.com/search?q=${q}`;
 }
 
 const TRENDING_THUMBNAILS: Record<"short_clips" | "tech_howto" | "entertainment" | "sports_live", string> = {
@@ -2011,7 +2032,6 @@ function resolveTrendingVisualTheme(
 
 function normalizePlatformLabel(raw: string): string {
   const p = (raw || "").trim().toLowerCase();
-  if (p.includes("youtube")) return "YouTube";
   if (p.includes("tiktok")) return "TikTok";
   if (p.includes("instagram")) return "Instagram";
   if (p.includes("threads")) return "Threads";
@@ -2019,7 +2039,7 @@ function normalizePlatformLabel(raw: string): string {
   if (p.includes("facebook")) return "Facebook";
   if (p.includes("linkedin")) return "LinkedIn";
   if (p.includes("pinterest")) return "Pinterest";
-  return "YouTube";
+  return "TikTok";
 }
 
 function getGeminiClient(): GoogleGenAI | null {
@@ -2056,7 +2076,7 @@ async function generateTrendingTopics(lang: string, category: string, forceFresh
     `Date: ${today}.`,
     `Language for all text fields (title, description, category, formatTip, searchQuery): ${languageName}.`,
     `Category focus: ${focusDescription}.`,
-    `Suggest 6 popular, timely, family-friendly public social video topics or content formats that viewers are actively watching, searching for, and saving right now across platforms like YouTube, TikTok, Instagram, Threads, X, Facebook, LinkedIn, and Pinterest.`,
+    `Suggest 6 popular, timely, family-friendly public social video topics or content formats that viewers are actively watching, searching for, and saving right now across platforms like TikTok, Instagram, Threads, X, Facebook, LinkedIn, and Pinterest (do not pick YouTube).`,
     `Make each suggestion concrete and specific to current online video culture rather than generic filler.`,
     freshnessCue,
   ]
@@ -2092,7 +2112,7 @@ async function generateTrendingTopics(lang: string, category: string, forceFresh
                     },
                     platform: {
                       type: Type.STRING,
-                      description: "Primary platform: YouTube, TikTok, Instagram, Threads, X, Facebook, LinkedIn, or Pinterest.",
+                      description: "Primary platform: TikTok, Instagram, Threads, X, Facebook, LinkedIn, or Pinterest.",
                     },
                     category: {
                       type: Type.STRING,
@@ -2124,7 +2144,7 @@ async function generateTrendingTopics(lang: string, category: string, forceFresh
         .filter((item) => item && typeof item.title === "string" && item.title.trim())
         .slice(0, 6)
         .map((item, idx) => {
-          const platform = normalizePlatformLabel(String(item.platform || "YouTube"));
+          const platform = normalizePlatformLabel(String(item.platform || "TikTok"));
           const searchQuery = String(item.searchQuery || item.title || "").trim().slice(0, 80);
           const title = String(item.title || "").trim().slice(0, 120);
           const description = String(item.description || "").trim().slice(0, 260);

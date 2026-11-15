@@ -157,6 +157,17 @@ def check_rate_limit() -> tuple[bool, int]:
         return True, 0
 
 
+def is_blocked_youtube_host(hostname: str) -> bool:
+    clean = hostname.lower().removeprefix("www.").removeprefix("m.")
+    return (
+        clean in ("youtube.com", "youtu.be", "youtube-nocookie.com", "youtubekids.com")
+        or clean.endswith(".youtube.com")
+        or clean.endswith(".youtu.be")
+        or clean.endswith(".youtube-nocookie.com")
+        or clean.endswith(".youtubekids.com")
+    )
+
+
 def validate_url(raw_url: object) -> tuple[bool, str]:
     if not isinstance(raw_url, str):
         return False, "Please provide a valid video URL."
@@ -190,6 +201,12 @@ def validate_url(raw_url: object) -> tuple[bool, str]:
     except ValueError:
         if "." not in hostname:
             return False, "URL must include a valid public domain name."
+
+    if is_blocked_youtube_host(hostname):
+        return (
+            False,
+            "YouTube downloads are temporarily disabled. Please use a public link from Facebook, Instagram, X, TikTok, LinkedIn, Threads, Snapchat, Pinterest, or Twitch.",
+        )
 
     return True, url
 
@@ -1789,8 +1806,6 @@ def _resolve_trending_visual_theme(
 
 def _normalize_platform_label(raw: str) -> str:
     p = (raw or "").strip().lower()
-    if "youtube" in p:
-        return "YouTube"
     if "tiktok" in p:
         return "TikTok"
     if "instagram" in p:
@@ -1805,15 +1820,13 @@ def _normalize_platform_label(raw: str) -> str:
         return "LinkedIn"
     if "pinterest" in p:
         return "Pinterest"
-    return "YouTube"
+    return "TikTok"
 
 
 def _build_platform_search_url(platform: str, search_query: str) -> str:
     clean_query = (search_query or "").strip() or "trending video"
     q = quote(clean_query, safe="")
     p = (platform or "").lower()
-    if "youtube" in p:
-        return f"https://www.youtube.com/results?search_query={q}"
     if "tiktok" in p:
         return f"https://www.tiktok.com/search?q={q}"
     if "instagram" in p:
@@ -1829,7 +1842,7 @@ def _build_platform_search_url(platform: str, search_query: str) -> str:
         return f"https://www.linkedin.com/search/results/content/?keywords={q}"
     if "pinterest" in p:
         return f"https://www.pinterest.com/search/pins/?q={q}"
-    return f"https://www.youtube.com/results?search_query={q}"
+    return f"https://www.tiktok.com/search?q={q}"
 
 
 def _check_trending_refresh_limit() -> bool:
@@ -1862,7 +1875,7 @@ def _fetch_gemini_trending(lang: str, category: str, force_fresh: bool) -> dict:
             f"Date: {today}.",
             f"Language for all text fields (title, description, category, formatTip, searchQuery): {language_name}.",
             f"Category focus: {focus_description}.",
-            "Suggest 6 popular, timely, family-friendly public social video topics or content formats that viewers are actively watching, searching for, and saving right now across platforms like YouTube, TikTok, Instagram, Threads, X, Facebook, LinkedIn, and Pinterest.",
+            "Suggest 6 popular, timely, family-friendly public social video topics or content formats that viewers are actively watching, searching for, and saving right now across platforms like TikTok, Instagram, Threads, X, Facebook, LinkedIn, and Pinterest (do not pick YouTube).",
             "Make each suggestion concrete and specific to current online video culture rather than generic filler.",
             freshness_cue,
         )
@@ -1940,7 +1953,7 @@ def _fetch_gemini_trending(lang: str, category: str, force_fresh: bool) -> dict:
     for item in raw_topics:
         if not isinstance(item, dict) or not str(item.get("title") or "").strip():
             continue
-        platform = _normalize_platform_label(str(item.get("platform") or "YouTube"))
+        platform = _normalize_platform_label(str(item.get("platform") or "TikTok"))
         search_query = str(item.get("searchQuery") or item.get("title") or "").strip()[:80]
         title_str = str(item.get("title") or "").strip()[:120]
         desc_str = str(item.get("description") or "").strip()[:260]

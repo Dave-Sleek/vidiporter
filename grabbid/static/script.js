@@ -162,8 +162,6 @@
         ["threads.net", "Threads"],
         ["threads.com", "Threads"],
         ["tiktok.com", "TikTok"],
-        ["youtube.com", "YouTube"],
-        ["youtu.be", "YouTube"],
         ["pinterest.com", "Pinterest"],
         ["pin.it", "Pinterest"],
         ["snapchat.com", "Snapchat"],
@@ -859,6 +857,24 @@
 
   /* ---------------- Network Actions ---------------- */
 
+  function isYouTubeUrl(rawUrl) {
+    try {
+      const host = new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+      return (
+        host === "youtube.com" ||
+        host.endsWith(".youtube.com") ||
+        host === "youtu.be" ||
+        host.endsWith(".youtu.be") ||
+        host === "youtube-nocookie.com" ||
+        host.endsWith(".youtube-nocookie.com") ||
+        host === "youtubekids.com" ||
+        host.endsWith(".youtubekids.com")
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function fetchVideoInfo(rawUrl) {
     hideError();
 
@@ -870,6 +886,12 @@
 
     if (!/^https?:\/\//i.test(rawUrl)) {
       showError(t("err.invalid_scheme"));
+      urlInput.focus();
+      return false;
+    }
+
+    if (isYouTubeUrl(rawUrl)) {
+      showError(t("err.youtube_disabled"));
       urlInput.focus();
       return false;
     }
@@ -1638,7 +1660,7 @@
     if (typeof rawUrl === "string" && /^https:\/\//i.test(rawUrl.trim())) {
       return rawUrl.trim();
     }
-    return `https://www.youtube.com/results?search_query=${encodeURIComponent(fallbackQuery || "trending video")}`;
+    return `https://www.tiktok.com/search?q=${encodeURIComponent(fallbackQuery || "trending video")}`;
   }
 
   const TRENDING_THUMBNAILS = {
@@ -1720,7 +1742,7 @@
 
       const safeExploreUrl = getSafeExploreUrl(topic.exploreUrl, topic.searchQuery || topic.title);
       const themeKey = resolveTrendingThemeKey(topic);
-      const platformText = topic.platform || "YouTube";
+      const platformText = topic.platform || "TikTok";
 
       const thumbLink = document.createElement("a");
       thumbLink.className = "trending-thumb-link";
