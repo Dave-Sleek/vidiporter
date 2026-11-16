@@ -423,9 +423,9 @@ html[data-theme="light"] .icon-moon {
 
 .url-input {
   width: 100%;
-  min-height: 48px;
-  padding: 11px 52px 11px 14px;
-  border-radius: var(--radius-md);
+  min-height: 54px;
+  padding: 12px 58px 12px 22px;
+  border-radius: 9999px;
   border: 1px solid var(--border-strong);
   background-color: var(--bg-input);
   color: var(--text-primary);
@@ -435,16 +435,16 @@ html[data-theme="light"] .icon-moon {
 }
 
 .input-wrapper.has-clear .url-input {
-  padding-right: 116px;
+  padding-right: 128px;
 }
 
 html[dir="rtl"] .url-input {
-  padding: 11px 14px 11px 52px;
+  padding: 12px 22px 12px 58px;
 }
 
 html[dir="rtl"] .input-wrapper.has-clear .url-input {
-  padding-right: 14px;
-  padding-left: 116px;
+  padding-right: 22px;
+  padding-left: 128px;
 }
 
 .url-input::placeholder {
@@ -459,7 +459,7 @@ html[dir="rtl"] .input-wrapper.has-clear .url-input {
 
 .input-actions {
   position: absolute;
-  right: 8px;
+  right: 7px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -467,46 +467,47 @@ html[dir="rtl"] .input-wrapper.has-clear .url-input {
 
 html[dir="rtl"] .input-actions {
   right: auto;
-  left: 8px;
+  left: 7px;
 }
 
 .paste-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   padding: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
   background-color: var(--bg-surface);
   color: var(--text-secondary);
   cursor: pointer;
   flex-shrink: 0;
-  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
 }
 
 .paste-btn:hover {
-  background-color: var(--bg-surface-hover);
-  color: var(--text-primary);
+  background-color: var(--accent-soft);
+  color: var(--accent);
   border-color: var(--accent);
 }
 
 .paste-btn.is-pasted {
-  color: var(--accent);
+  background-color: var(--accent);
+  color: #ffffff;
   border-color: var(--accent);
 }
 
 .paste-btn:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 .clear-btn {
-  padding: 5px 10px;
-  min-height: 34px;
+  padding: 6px 12px;
+  min-height: 38px;
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: 9999px;
   background-color: var(--bg-surface);
   color: var(--text-secondary);
   font-family: inherit;
@@ -528,10 +529,10 @@ html[dir="rtl"] .input-actions {
 }
 
 .fetch-btn {
-  min-height: 48px;
-  padding: 11px 24px;
+  min-height: 54px;
+  padding: 12px 26px;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: 9999px;
   background-color: var(--accent);
   color: #ffffff;
   font-family: inherit;
