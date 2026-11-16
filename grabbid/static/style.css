@@ -568,9 +568,10 @@ html[dir="rtl"] .input-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 4px 8px;
   font-size: 0.8125rem;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   line-height: 1.5;
 }
 
@@ -1322,7 +1323,11 @@ html[dir="rtl"] .input-actions {
 }
 
 .card-footer {
-  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 16px;
   border-top: 1px solid var(--border-subtle);
 }
 
