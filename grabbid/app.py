@@ -1,10 +1,12 @@
 import base64
+import copy
 import html as html_lib
 import json
 import os
 import queue
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
@@ -39,6 +41,14 @@ _JOB_TTL_SECONDS = 600
 _READY_GRACE_SECONDS = 300
 _download_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+
+_INFO_CACHE_TTL_SECONDS = 480
+_INFO_CACHE_MAX_ENTRIES = 120
+_info_cache: dict[str, tuple[float, dict]] = {}
+_threads_cache: dict[str, tuple[float, dict]] = {}
+_info_inflight: dict[str, dict] = {}
+_threads_inflight: dict[str, dict] = {}
+_cache_lock = threading.Lock()
 
 # In-memory rate limiter: max 10 requests per IP per 60 seconds
 RATE_LIMIT = 10
@@ -114,8 +124,13 @@ def get_ytdlp_base_options(url: str | None = None) -> dict:
         "noplaylist": True,
         "nocheckcertificate": True,
         "geo_bypass": True,
-        "socket_timeout": 30,
+        "socket_timeout": 15,
         "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 3,
+        "concurrent_fragment_downloads": 6,
+        "buffersize": 65536,
+        "http_chunk_size": 10485760,
         "cookiefile": _resolve_cookie_file(),
     }
 
@@ -131,6 +146,122 @@ def get_ytdlp_base_options(url: str | None = None) -> dict:
         opts["proxy"] = proxy_url
 
     return opts
+
+
+def _set_bounded_cache(cache: dict[str, tuple[float, dict]], key: str, value: dict) -> None:
+    cache.pop(key, None)
+    cache[key] = (time.time() + _INFO_CACHE_TTL_SECONDS, value)
+    while len(cache) > _INFO_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(cache), None)
+        if oldest_key is None:
+            break
+        cache.pop(oldest_key, None)
+
+
+def _get_cached_ytdlp_raw_info(url: str) -> dict | None:
+    with _cache_lock:
+        entry = _info_cache.get(url)
+        if not entry:
+            return None
+        if entry[0] <= time.time():
+            _info_cache.pop(url, None)
+            return None
+        return entry[1]
+
+
+def _invalidate_extraction_cache(url: str) -> None:
+    with _cache_lock:
+        _info_cache.pop(url, None)
+        _threads_cache.pop(url, None)
+
+
+def _fetch_ytdlp_info_cached(url: str, force_refresh: bool = False) -> dict:
+    if not force_refresh:
+        cached = _get_cached_ytdlp_raw_info(url)
+        if cached is not None:
+            return cached
+
+    inflight = None
+    is_owner = False
+    with _cache_lock:
+        if not force_refresh:
+            entry = _info_cache.get(url)
+            if entry and entry[0] > time.time():
+                return entry[1]
+            existing = _info_inflight.get(url)
+            if existing is not None:
+                inflight = existing
+        if inflight is None:
+            inflight = {"event": threading.Event(), "result": None, "error": None}
+            _info_inflight[url] = inflight
+            is_owner = True
+
+    if not is_owner:
+        inflight["event"].wait()
+        if inflight["error"] is not None:
+            raise inflight["error"]
+        return inflight["result"]
+
+    try:
+        ydl_opts = get_ytdlp_base_options(url)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            raw_info = ydl.extract_info(url, download=False)
+        if not raw_info:
+            raise DownloadError("Could not extract video information from this URL.")
+        with _cache_lock:
+            _set_bounded_cache(_info_cache, url, raw_info)
+        inflight["result"] = raw_info
+        return raw_info
+    except Exception as exc:
+        inflight["error"] = exc
+        raise
+    finally:
+        with _cache_lock:
+            if _info_inflight.get(url) is inflight:
+                _info_inflight.pop(url, None)
+        inflight["event"].set()
+
+
+def _fetch_threads_info_cached(url: str, force_refresh: bool = False) -> dict:
+    with _cache_lock:
+        if not force_refresh:
+            entry = _threads_cache.get(url)
+            if entry and entry[0] > time.time():
+                return entry[1]
+            _threads_cache.pop(url, None)
+            existing = _threads_inflight.get(url)
+            if existing is not None:
+                inflight = existing
+                is_owner = False
+            else:
+                inflight = {"event": threading.Event(), "result": None, "error": None}
+                _threads_inflight[url] = inflight
+                is_owner = True
+        else:
+            inflight = {"event": threading.Event(), "result": None, "error": None}
+            _threads_inflight[url] = inflight
+            is_owner = True
+
+    if not is_owner:
+        inflight["event"].wait()
+        if inflight["error"] is not None:
+            raise inflight["error"]
+        return inflight["result"]
+
+    try:
+        info = extract_threads_info(url)
+        with _cache_lock:
+            _set_bounded_cache(_threads_cache, url, info)
+        inflight["result"] = info
+        return info
+    except Exception as exc:
+        inflight["error"] = exc
+        raise
+    finally:
+        with _cache_lock:
+            if _threads_inflight.get(url) is inflight:
+                _threads_inflight.pop(url, None)
+        inflight["event"].set()
 
 
 def get_client_ip() -> str:
@@ -334,7 +465,7 @@ def _head_content_length(target_url: str) -> int | None:
             method="HEAD",
             headers={"User-Agent": "Mozilla/5.0 (compatible; Vidiporter/1.0)"},
         )
-        with opener.open(req, timeout=4.5) as resp:
+        with opener.open(req, timeout=2.0) as resp:
             raw_len = resp.headers.get("Content-Length")
             if raw_len and raw_len.isdigit():
                 size = int(raw_len)
@@ -528,9 +659,10 @@ def extract_threads_info(url: str) -> dict:
         reverse=True,
     )
     limited_videos = unique_videos[:6]
-
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(limited_videos)))) as pool:
-        sizes = list(pool.map(_head_content_length, [v["url"] for v in limited_videos]))
+    head_targets = [v["url"] for v in limited_videos[:4]]
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(head_targets)))) as pool:
+        probed_sizes = list(pool.map(_head_content_length, head_targets))
+    sizes = probed_sizes + [None] * max(0, len(limited_videos) - len(probed_sizes))
 
     formats = []
     for idx, v in enumerate(limited_videos):
@@ -580,16 +712,27 @@ def extract_threads_info(url: str) -> dict:
     }
 
 
-def _download_direct_stream(media_url: str, dest_path: str, on_progress=None, is_aborted=None) -> None:
+def _download_direct_stream(
+    media_url: str,
+    dest_path: str,
+    on_progress=None,
+    is_aborted=None,
+    extra_headers: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> None:
     opener = _build_url_opener()
-    req = urllib.request.Request(
-        media_url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; Vidiporter/1.0)",
-            "Referer": "https://www.threads.com/",
-        },
-    )
-    with opener.open(req, timeout=60) as resp, open(dest_path, "wb") as out_f:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; Vidiporter/1.0)",
+        **(extra_headers or {}),
+    }
+    if "threads" in media_url or ("Referer" not in headers and "referer" not in headers):
+        headers["Referer"] = "https://www.threads.com/"
+
+    req = urllib.request.Request(media_url, headers=headers)
+    with opener.open(req, timeout=timeout) as resp, open(dest_path, "wb", buffering=512 * 1024) as out_f:
+        content_type = (resp.headers.get("Content-Type") or "").lower()
+        if "text/html" in content_type or "application/json" in content_type:
+            raise DownloadError("Upstream returned non-media response.")
         raw_len = resp.headers.get("Content-Length")
         total_bytes = int(raw_len) if raw_len and raw_len.isdigit() and int(raw_len) > 0 else None
         downloaded = 0
@@ -598,7 +741,7 @@ def _download_direct_stream(media_url: str, dest_path: str, on_progress=None, is
         while True:
             if is_aborted and is_aborted():
                 raise DownloadError("Download cancelled by user.")
-            chunk = resp.read(65536)
+            chunk = resp.read(131072)
             if not chunk:
                 break
             out_f.write(chunk)
@@ -1024,6 +1167,42 @@ def get_quality_mode(format_id: str) -> str:
     return "original"
 
 
+def _has_mp4_faststart(file_path: str) -> bool:
+    try:
+        total_size = os.path.getsize(file_path)
+        if total_size < 16:
+            return False
+        with open(file_path, "rb") as fh:
+            offset = 0
+            boxes = 0
+            while offset + 8 <= total_size and boxes < 32:
+                boxes += 1
+                fh.seek(offset)
+                header = fh.read(16)
+                if len(header) < 8:
+                    break
+                size32, box_bytes = struct.unpack(">I4s", header[:8])
+                box_type = box_bytes.decode("ascii", errors="ignore")
+                if box_type == "moov":
+                    return True
+                if box_type == "mdat":
+                    return False
+                if size32 == 1:
+                    if len(header) < 16:
+                        break
+                    box_size = struct.unpack(">Q", header[8:16])[0]
+                    if box_size < 16:
+                        break
+                elif size32 == 0 or size32 < 8:
+                    break
+                else:
+                    box_size = size32
+                offset += box_size
+        return False
+    except OSError:
+        return False
+
+
 def ensure_mobile_compatible_mp4(
     input_path: str,
     tmpdir: str,
@@ -1057,6 +1236,16 @@ def ensure_mobile_compatible_mp4(
     )
     video_ok = is_h264_copyable or is_hevc_copyable
     audio_ok = (not needs_scale) and ((not probe["acodec"]) or probe["acodec"] in ("aac", "mp3"))
+
+    input_ext = os.path.splitext(input_path)[1].lower()
+    if (
+        input_ext in (".mp4", ".m4v")
+        and not needs_scale
+        and (is_h264_copyable or (is_hevc_copyable and probe["vtag"] == "hvc1"))
+        and audio_ok
+        and _has_mp4_faststart(input_path)
+    ):
+        return input_path
 
     try:
         input_size = os.path.getsize(input_path)
@@ -1237,7 +1426,7 @@ def api_info():
 
     if is_threads_url(url):
         try:
-            threads_info = extract_threads_info(url)
+            threads_info = _fetch_threads_info_cached(url)
             return jsonify(
                 {
                     "title": threads_info["title"],
@@ -1263,12 +1452,9 @@ def api_info():
         except Exception as exc:
             return jsonify({"error": format_ytdlp_error(exc, url)}), 400
 
-    ydl_opts = get_ytdlp_base_options(url)
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            raw_info = ydl.extract_info(url, download=False)
-            info = unwrap_info(raw_info)
+        raw_info = _fetch_ytdlp_info_cached(url)
+        info = unwrap_info(raw_info)
     except (DownloadError, ExtractorError) as exc:
         return jsonify({"error": format_ytdlp_error(exc, url)}), 400
     except Exception as exc:
@@ -1367,6 +1553,124 @@ def _prune_expired_jobs() -> None:
         _cleanup_job(job)
 
 
+def _is_direct_progressive_mp4_candidate(fmt: dict, page_url: str) -> bool:
+    media_url = str(fmt.get("url") or "").strip()
+    if not media_url.startswith(("http://", "https://")):
+        return False
+    if fmt.get("has_drm") or fmt.get("fragments") or fmt.get("manifest_url"):
+        return False
+    proto = str(fmt.get("protocol") or "").lower()
+    if proto and proto not in ("https", "http"):
+        return False
+    if re.search(r"\.m3u8(?:$|\?)|\.mpd(?:$|\?)", media_url, flags=re.IGNORECASE):
+        return False
+
+    is_snapchat = is_snapchat_url(page_url)
+    raw_ext = str(fmt.get("ext") or "").lower()
+    ext = _normalize_format_ext(raw_ext, is_snapchat)
+    if ext not in ("mp4", "m4v"):
+        return False
+
+    vc = str(fmt.get("vcodec") or "").lower()
+    ac = str(fmt.get("acodec") or "").lower()
+    has_video = bool(vc and vc != "none") or ((is_snapchat or raw_ext == "irzxsoy") and vc != "none")
+    has_audio = bool(ac and ac != "none") or (not vc and (is_snapchat or raw_ext == "irzxsoy"))
+    return has_video and has_audio
+
+
+def _resolve_direct_progressive_download(probe_info: dict | None, format_id: str, page_url: str) -> tuple[str, dict[str, str] | None] | None:
+    if not probe_info or _resolve_cookie_file() or _resolve_proxy_url():
+        return None
+    raw_formats = probe_info.get("formats") or []
+
+    def to_result(fmt: dict):
+        direct_url = str(fmt.get("url") or "").strip()
+        ok, validated = validate_url(direct_url)
+        if not ok:
+            return None
+        headers = {**(probe_info.get("http_headers") or {}), **(fmt.get("http_headers") or {})}
+        return validated, (headers or None)
+
+    if not raw_formats and probe_info.get("url"):
+        proto = str(probe_info.get("protocol") or "").lower()
+        ext = _normalize_format_ext(str(probe_info.get("ext") or "").lower(), is_snapchat_url(page_url))
+        if (
+            ext in ("mp4", "m4v")
+            and (not proto or proto in ("https", "http"))
+            and not re.search(r"\.m3u8(?:$|\?)|\.mpd(?:$|\?)", str(probe_info.get("url") or ""), flags=re.IGNORECASE)
+        ):
+            return to_result(probe_info)
+        return None
+
+    if format_id not in ("best", "hd", "sd"):
+        exact = next((f for f in raw_formats if str(f.get("format_id")) == format_id), None)
+        if exact and _is_direct_progressive_mp4_candidate(exact, page_url):
+            return to_result(exact)
+        return None
+
+    progressive = []
+    for f in raw_formats:
+        if not _is_direct_progressive_mp4_candidate(f, page_url):
+            continue
+        short_side = _get_short_side(f.get("width"), f.get("height"))
+        vc = str(f.get("vcodec") or "").lower()
+        ac = str(f.get("acodec") or "").lower()
+        is_h264 = 1 if vc.startswith(("avc1", "h264")) else 0
+        is_aac = 1 if ac.startswith(("mp4a", "aac")) else 0
+        tbr = float(f.get("tbr") or f.get("vbr") or 0.0)
+        progressive.append((f, short_side, is_h264, is_aac, tbr))
+
+    if not progressive:
+        return None
+
+    has_split_video = any(
+        bool(str(f.get("vcodec") or "").lower() not in ("", "none"))
+        and str(f.get("acodec") or "").lower() in ("", "none")
+        for f in raw_formats
+    )
+
+    if format_id == "hd":
+        exact720 = [c for c in progressive if c[1] == 720]
+        if exact720:
+            pick = max(exact720, key=lambda c: (c[2], c[3], c[4]))
+            return to_result(pick[0])
+        if not has_split_video:
+            hd_range = [c for c in progressive if 720 <= c[1] <= 1080]
+            if hd_range:
+                pick = min(hd_range, key=lambda c: (c[1], -c[2], -c[4]))
+                return to_result(pick[0])
+            fallback = [c for c in progressive if c[1] <= 1080]
+            if fallback:
+                pick = max(fallback, key=lambda c: (c[1], c[2], c[4]))
+                return to_result(pick[0])
+        return None
+
+    if format_id == "sd":
+        sd_range = [c for c in progressive if 360 <= c[1] <= 480]
+        if sd_range:
+            pick = max(sd_range, key=lambda c: (c[2], c[3], c[1], c[4]))
+            return to_result(pick[0])
+        if not has_split_video:
+            below_sd = [c for c in progressive if 0 < c[1] <= 540]
+            if below_sd:
+                pick = max(below_sd, key=lambda c: (c[1], c[2], c[4]))
+                return to_result(pick[0])
+        return None
+
+    max_split_side = max(
+        (
+            _get_short_side(f.get("width"), f.get("height"))
+            for f in raw_formats
+            if str(f.get("vcodec") or "").lower() not in ("", "none")
+        ),
+        default=0,
+    )
+    top_prog = max(progressive, key=lambda c: (c[1], c[2], c[3], c[4]))
+    if top_prog[1] >= max_split_side:
+        return to_result(top_prog[0])
+    return None
+
+
 def _run_download_job(job: dict, url: str, format_id: str) -> None:
     tmpdir = job["tmpdir"]
     try:
@@ -1374,7 +1678,7 @@ def _run_download_job(job: dict, url: str, format_id: str) -> None:
         resolved_title = "vidiporter_video"
 
         if is_threads_url(url):
-            threads_info = extract_threads_info(url)
+            threads_info = _fetch_threads_info_cached(url)
             if job["aborted"]:
                 return
             resolved_title = threads_info.get("title") or "vidiporter_video"
@@ -1396,84 +1700,159 @@ def _run_download_job(job: dict, url: str, format_id: str) -> None:
                 _notify_job(job)
 
             downloaded_path = os.path.join(tmpdir, "video.mp4")
-            _download_direct_stream(
-                chosen["direct_url"],
-                downloaded_path,
-                on_progress=on_threads_progress,
-                is_aborted=lambda: job["aborted"],
-            )
+            try:
+                _download_direct_stream(
+                    chosen["direct_url"],
+                    downloaded_path,
+                    on_progress=on_threads_progress,
+                    is_aborted=lambda: job["aborted"],
+                )
+            except Exception:
+                if job["aborted"]:
+                    return
+                _invalidate_extraction_cache(url)
+                fresh_threads = _fetch_threads_info_cached(url, force_refresh=True)
+                if job["aborted"]:
+                    return
+                resolved_title = fresh_threads.get("title") or resolved_title
+                fresh_chosen = pick_threads_format(fresh_threads["formats"], format_id) or fresh_threads["formats"][0]
+                if os.path.exists(downloaded_path):
+                    os.remove(downloaded_path)
+                _download_direct_stream(
+                    fresh_chosen["direct_url"],
+                    downloaded_path,
+                    on_progress=on_threads_progress,
+                    is_aborted=lambda: job["aborted"],
+                )
         else:
             base_opts = get_ytdlp_base_options(url)
             is_preset = format_id in ("best", "hd", "sd")
-            probe_info = None
-            if not is_preset:
-                with yt_dlp.YoutubeDL(base_opts) as probe_ydl:
-                    probe_info = unwrap_info(probe_ydl.extract_info(url, download=False))
+            cached_raw_info = _get_cached_ytdlp_raw_info(url)
+            probe_info = unwrap_info(cached_raw_info) if cached_raw_info else None
+            if not is_preset and not probe_info:
+                cached_raw_info = _fetch_ytdlp_info_cached(url)
+                if job["aborted"]:
+                    return
+                probe_info = unwrap_info(cached_raw_info)
+            if probe_info and probe_info.get("title"):
+                resolved_title = probe_info["title"]
 
             format_spec = build_format_spec(probe_info, format_id)
             job["stage"] = "downloading"
             job["percent"] = 0
             _notify_job(job)
 
-            def on_progress(d: dict) -> None:
-                if job["aborted"]:
-                    raise DownloadError("Download cancelled by user.")
-                status = d.get("status")
-                if status == "downloading":
-                    dl = d.get("downloaded_bytes")
-                    tot = d.get("total_bytes") or d.get("total_bytes_estimate")
-                    pct = int(round((dl / tot) * 100)) if dl is not None and tot else None
-                    if pct is not None:
-                        pct = min(100, max(0, pct))
-                    job["stage"] = "downloading"
-                    job["downloaded_bytes"] = dl
-                    job["total_bytes"] = tot
-                    job["speed_bytes"] = d.get("speed")
-                    job["eta_seconds"] = d.get("eta")
-                    job["percent"] = pct
-                    _notify_job(job)
-                elif status == "finished":
-                    job["stage"] = "downloading"
-                    job["percent"] = 100
-                    _notify_job(job)
-
-            def on_postprocess(d: dict) -> None:
+            def on_direct_progress(dl, tot, speed, eta, pct):
                 if job["aborted"]:
                     return
-                job["stage"] = "merging"
-                job["percent"] = None
-                job["speed_bytes"] = None
-                job["eta_seconds"] = None
+                job["stage"] = "downloading"
+                job["downloaded_bytes"] = dl
+                job["total_bytes"] = tot
+                job["speed_bytes"] = speed
+                job["eta_seconds"] = eta
+                job["percent"] = pct
                 _notify_job(job)
 
-            download_opts = {
-                **base_opts,
-                "format": format_spec,
-                "format_sort": build_format_sort_list(format_id),
-                "merge_output_format": "mp4/mkv",
-                "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
-                "progress_hooks": [on_progress],
-                "postprocessor_hooks": [on_postprocess],
-            }
+            direct_candidate = _resolve_direct_progressive_download(probe_info, format_id, url)
+            if direct_candidate:
+                direct_target = os.path.join(tmpdir, "video.mp4")
+                try:
+                    _download_direct_stream(
+                        direct_candidate[0],
+                        direct_target,
+                        on_progress=on_direct_progress,
+                        is_aborted=lambda: job["aborted"],
+                        extra_headers=direct_candidate[1],
+                        timeout=30,
+                    )
+                    if os.path.isfile(direct_target) and os.path.getsize(direct_target) > 1024:
+                        downloaded_path = direct_target
+                    elif os.path.exists(direct_target):
+                        os.remove(direct_target)
+                except Exception:
+                    if job["aborted"]:
+                        return
+                    if os.path.exists(direct_target):
+                        os.remove(direct_target)
 
-            with yt_dlp.YoutubeDL(download_opts) as ydl:
-                info = unwrap_info(ydl.extract_info(url, download=True))
+            if not downloaded_path:
+                def on_progress(d: dict) -> None:
+                    if job["aborted"]:
+                        raise DownloadError("Download cancelled by user.")
+                    status = d.get("status")
+                    if status == "downloading":
+                        dl = d.get("downloaded_bytes")
+                        tot = d.get("total_bytes") or d.get("total_bytes_estimate")
+                        pct = int(round((dl / tot) * 100)) if dl is not None and tot else None
+                        if pct is not None:
+                            pct = min(100, max(0, pct))
+                        job["stage"] = "downloading"
+                        job["downloaded_bytes"] = dl
+                        job["total_bytes"] = tot
+                        job["speed_bytes"] = d.get("speed")
+                        job["eta_seconds"] = d.get("eta")
+                        job["percent"] = pct
+                        _notify_job(job)
+                    elif status == "finished":
+                        job["stage"] = "downloading"
+                        job["percent"] = 100
+                        _notify_job(job)
+
+                def on_postprocess(d: dict) -> None:
+                    if job["aborted"]:
+                        return
+                    job["stage"] = "merging"
+                    job["percent"] = None
+                    job["speed_bytes"] = None
+                    job["eta_seconds"] = None
+                    _notify_job(job)
+
+                download_opts = {
+                    **base_opts,
+                    "format": format_spec,
+                    "format_sort": build_format_sort_list(format_id),
+                    "merge_output_format": "mp4/mkv",
+                    "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
+                    "progress_hooks": [on_progress],
+                    "postprocessor_hooks": [on_postprocess],
+                }
+
+                info = None
+                if cached_raw_info:
+                    try:
+                        with yt_dlp.YoutubeDL(download_opts) as ydl:
+                            info = unwrap_info(ydl.process_ie_result(copy.deepcopy(cached_raw_info), download=True))
+                    except Exception:
+                        if job["aborted"]:
+                            return
+                        _invalidate_extraction_cache(url)
+                        for entry in os.listdir(tmpdir):
+                            try:
+                                os.remove(os.path.join(tmpdir, entry))
+                            except OSError:
+                                pass
+                        info = None
+
+                if info is None:
+                    with yt_dlp.YoutubeDL(download_opts) as ydl:
+                        info = unwrap_info(ydl.extract_info(url, download=True))
+
                 if info and info.get("title"):
                     resolved_title = info["title"]
 
-            if job["aborted"]:
-                return
+                if job["aborted"]:
+                    return
 
-            for entry in os.listdir(tmpdir):
-                if entry.endswith((".part", ".ytdl", ".temp", ".json", ".description", ".jpg", ".webp", ".png")):
-                    continue
-                candidate = os.path.abspath(os.path.join(tmpdir, entry))
-                if os.path.commonpath([tmpdir, candidate]) == tmpdir and os.path.isfile(candidate):
-                    downloaded_path = candidate
-                    break
+                for entry in os.listdir(tmpdir):
+                    if entry.endswith((".part", ".ytdl", ".temp", ".json", ".description", ".jpg", ".webp", ".png")):
+                        continue
+                    candidate = os.path.abspath(os.path.join(tmpdir, entry))
+                    if os.path.commonpath([tmpdir, candidate]) == tmpdir and os.path.isfile(candidate):
+                        downloaded_path = candidate
+                        break
 
-            if not downloaded_path:
-                raise DownloadError("Download finished but no output file was produced.")
+                if not downloaded_path:
+                    raise DownloadError("Download finished but no output file was produced.")
 
         if job["aborted"]:
             return
@@ -1683,46 +2062,93 @@ def api_download():
         resolved_title = "vidiporter_video"
 
         if is_threads_url(url):
-            threads_info = extract_threads_info(url)
+            threads_info = _fetch_threads_info_cached(url)
             resolved_title = threads_info.get("title") or "vidiporter_video"
             formats = threads_info["formats"]
             chosen = pick_threads_format(formats, format_id) or formats[0]
             downloaded_path = os.path.join(tmpdir, "video.mp4")
-            _download_direct_stream(chosen["direct_url"], downloaded_path)
+            try:
+                _download_direct_stream(chosen["direct_url"], downloaded_path)
+            except Exception:
+                _invalidate_extraction_cache(url)
+                fresh_threads = _fetch_threads_info_cached(url, force_refresh=True)
+                resolved_title = fresh_threads.get("title") or resolved_title
+                fresh_chosen = pick_threads_format(fresh_threads["formats"], format_id) or fresh_threads["formats"][0]
+                if os.path.exists(downloaded_path):
+                    os.remove(downloaded_path)
+                _download_direct_stream(fresh_chosen["direct_url"], downloaded_path)
         else:
             base_opts = get_ytdlp_base_options(url)
             is_preset = format_id in ("best", "hd", "sd")
-            probe_info = None
-            if not is_preset:
-                with yt_dlp.YoutubeDL(base_opts) as probe_ydl:
-                    probe_info = unwrap_info(probe_ydl.extract_info(url, download=False))
+            cached_raw_info = _get_cached_ytdlp_raw_info(url)
+            probe_info = unwrap_info(cached_raw_info) if cached_raw_info else None
+            if not is_preset and not probe_info:
+                cached_raw_info = _fetch_ytdlp_info_cached(url)
+                probe_info = unwrap_info(cached_raw_info)
+            if probe_info and probe_info.get("title"):
+                resolved_title = probe_info["title"]
 
             format_spec = build_format_spec(probe_info, format_id)
 
-            download_opts = {
-                **base_opts,
-                "format": format_spec,
-                "format_sort": build_format_sort_list(format_id),
-                "merge_output_format": "mp4/mkv",
-                "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
-            }
+            direct_candidate = _resolve_direct_progressive_download(probe_info, format_id, url)
+            if direct_candidate:
+                direct_target = os.path.join(tmpdir, "video.mp4")
+                try:
+                    _download_direct_stream(
+                        direct_candidate[0],
+                        direct_target,
+                        extra_headers=direct_candidate[1],
+                        timeout=30,
+                    )
+                    if os.path.isfile(direct_target) and os.path.getsize(direct_target) > 1024:
+                        downloaded_path = direct_target
+                    elif os.path.exists(direct_target):
+                        os.remove(direct_target)
+                except Exception:
+                    if os.path.exists(direct_target):
+                        os.remove(direct_target)
 
-            with yt_dlp.YoutubeDL(download_opts) as ydl:
-                info = unwrap_info(ydl.extract_info(url, download=True))
+            if not downloaded_path:
+                download_opts = {
+                    **base_opts,
+                    "format": format_spec,
+                    "format_sort": build_format_sort_list(format_id),
+                    "merge_output_format": "mp4/mkv",
+                    "outtmpl": os.path.join(tmpdir, "video.%(ext)s"),
+                }
+
+                info = None
+                if cached_raw_info:
+                    try:
+                        with yt_dlp.YoutubeDL(download_opts) as ydl:
+                            info = unwrap_info(ydl.process_ie_result(copy.deepcopy(cached_raw_info), download=True))
+                    except Exception:
+                        _invalidate_extraction_cache(url)
+                        for entry in os.listdir(tmpdir):
+                            try:
+                                os.remove(os.path.join(tmpdir, entry))
+                            except OSError:
+                                pass
+                        info = None
+
+                if info is None:
+                    with yt_dlp.YoutubeDL(download_opts) as ydl:
+                        info = unwrap_info(ydl.extract_info(url, download=True))
+
                 if info and info.get("title"):
                     resolved_title = info["title"]
 
-            for entry in os.listdir(tmpdir):
-                if entry.endswith((".part", ".ytdl", ".temp", ".json", ".description", ".jpg", ".webp", ".png")):
-                    continue
-                candidate = os.path.abspath(os.path.join(tmpdir, entry))
-                if os.path.commonpath([tmpdir, candidate]) == tmpdir and os.path.isfile(candidate):
-                    downloaded_path = candidate
-                    break
+                for entry in os.listdir(tmpdir):
+                    if entry.endswith((".part", ".ytdl", ".temp", ".json", ".description", ".jpg", ".webp", ".png")):
+                        continue
+                    candidate = os.path.abspath(os.path.join(tmpdir, entry))
+                    if os.path.commonpath([tmpdir, candidate]) == tmpdir and os.path.isfile(candidate):
+                        downloaded_path = candidate
+                        break
 
-            if not downloaded_path:
-                shutil.rmtree(tmpdir, ignore_errors=True)
-                return jsonify({"error": "Download finished but no output file was produced."}), 400
+                if not downloaded_path:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    return jsonify({"error": "Download finished but no output file was produced."}), 400
 
         final_path = ensure_mobile_compatible_mp4(
             downloaded_path,

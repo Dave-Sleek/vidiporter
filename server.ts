@@ -43,6 +43,11 @@ interface RawYtDlpFormat {
   resolution?: string | null;
   format_note?: string | null;
   has_drm?: boolean | null;
+  url?: string;
+  protocol?: string | null;
+  http_headers?: Record<string, string> | null;
+  fragments?: unknown[] | null;
+  manifest_url?: string | null;
 }
 
 interface RawYtDlpInfo {
@@ -60,6 +65,8 @@ interface RawYtDlpInfo {
   filesize?: number | null;
   filesize_approx?: number | null;
   url?: string;
+  protocol?: string | null;
+  http_headers?: Record<string, string> | null;
   formats?: RawYtDlpFormat[];
   entries?: RawYtDlpInfo[];
 }
@@ -127,14 +134,16 @@ async function ensureYtDlpBinary(): Promise<string> {
       }
     }
 
-    // Download standalone yt-dlp_linux binary into temp dir as fallback
+    // Download standalone yt-dlp_linux binary into temp dir as fallback (atomic rename)
     const resp = await fetch(YTDLP_RELEASE_URL, { redirect: "follow" });
     if (!resp.ok) {
       throw new Error(`Failed to fetch yt-dlp binary (${resp.status})`);
     }
     const buffer = Buffer.from(await resp.arrayBuffer());
-    await fsp.writeFile(YTDLP_LOCAL_BIN, buffer, { mode: 0o755 });
-    await fsp.chmod(YTDLP_LOCAL_BIN, 0o755);
+    const tmpBin = `${YTDLP_LOCAL_BIN}.${process.pid}.part`;
+    await fsp.writeFile(tmpBin, buffer, { mode: 0o755 });
+    await fsp.chmod(tmpBin, 0o755);
+    await fsp.rename(tmpBin, YTDLP_LOCAL_BIN);
     return YTDLP_LOCAL_BIN;
   })();
 
@@ -144,6 +153,92 @@ async function ensureYtDlpBinary(): Promise<string> {
     ytdlpReadyPromise = null;
     throw err;
   }
+}
+
+const INFO_CACHE_TTL_MS = 8 * 60_000;
+const INFO_CACHE_MAX_ENTRIES = 120;
+const ytDlpInfoCache = new Map<string, { rawInfo: RawYtDlpInfo; expiresAt: number }>();
+const ytDlpInfoInFlight = new Map<string, Promise<RawYtDlpInfo>>();
+const threadsInfoCache = new Map<string, { info: ThreadsExtractedInfo; expiresAt: number }>();
+const threadsInfoInFlight = new Map<string, Promise<ThreadsExtractedInfo>>();
+
+function setBoundedCache<T>(cache: Map<string, { expiresAt: number } & T>, key: string, value: T): void {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, { ...value, expiresAt: Date.now() + INFO_CACHE_TTL_MS });
+  while (cache.size > INFO_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+}
+
+function getCachedYtDlpRawInfo(url: string): RawYtDlpInfo | null {
+  const cached = ytDlpInfoCache.get(url);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    ytDlpInfoCache.delete(url);
+    return null;
+  }
+  return cached.rawInfo;
+}
+
+async function fetchYtDlpInfoCached(url: string, forceRefresh = false): Promise<RawYtDlpInfo> {
+  if (!forceRefresh) {
+    const cached = getCachedYtDlpRawInfo(url);
+    if (cached) return cached;
+    const inflight = ytDlpInfoInFlight.get(url);
+    if (inflight) return inflight;
+  }
+
+  const promise = (async () => {
+    const bin = await ensureYtDlpBinary();
+    const rawInfo = await runYtDlpJson(bin, [...getBaseYtDlpArgs(url), "--dump-single-json", url]);
+    setBoundedCache(ytDlpInfoCache, url, { rawInfo });
+    return rawInfo;
+  })();
+
+  ytDlpInfoInFlight.set(url, promise);
+  try {
+    return await promise;
+  } finally {
+    if (ytDlpInfoInFlight.get(url) === promise) {
+      ytDlpInfoInFlight.delete(url);
+    }
+  }
+}
+
+async function fetchThreadsInfoCached(url: string, forceRefresh = false): Promise<ThreadsExtractedInfo> {
+  if (!forceRefresh) {
+    const cached = threadsInfoCache.get(url);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.info;
+    }
+    threadsInfoCache.delete(url);
+    const inflight = threadsInfoInFlight.get(url);
+    if (inflight) return inflight;
+  }
+
+  const promise = (async () => {
+    const info = await extractThreadsInfo(url);
+    setBoundedCache(threadsInfoCache, url, { info });
+    return info;
+  })();
+
+  threadsInfoInFlight.set(url, promise);
+  try {
+    return await promise;
+  } finally {
+    if (threadsInfoInFlight.get(url) === promise) {
+      threadsInfoInFlight.delete(url);
+    }
+  }
+}
+
+function invalidateExtractionCache(url: string): void {
+  ytDlpInfoCache.delete(url);
+  threadsInfoCache.delete(url);
 }
 
 function getClientIp(req: Request): string {
@@ -318,7 +413,7 @@ function getBaseYtDlpArgs(url?: string): string[] {
     "--no-check-certificate",
     "--geo-bypass",
     "--socket-timeout",
-    "30",
+    "15",
     "--retries",
     "3",
     "--js-runtimes",
@@ -340,6 +435,21 @@ function getBaseYtDlpArgs(url?: string): string[] {
   }
 
   return args;
+}
+
+function getFastDownloadArgs(): string[] {
+  return [
+    "--concurrent-fragments",
+    "6",
+    "--fragment-retries",
+    "3",
+    "--file-access-retries",
+    "3",
+    "--buffer-size",
+    "64K",
+    "--http-chunk-size",
+    "10M",
+  ];
 }
 
 function formatYtDlpError(rawMessage: string, url: string): string {
@@ -522,7 +632,7 @@ async function headContentLength(targetUrl: string): Promise<number | null> {
         "User-Agent": "Mozilla/5.0 (compatible; Vidiporter/1.0)",
       },
       redirect: "follow",
-      signal: AbortSignal.timeout(4500),
+      signal: AbortSignal.timeout(2000),
     });
     if (!resp.ok) return null;
     const len = Number(resp.headers.get("content-length") || 0);
@@ -744,7 +854,9 @@ async function extractThreadsInfo(url: string): Promise<ThreadsExtractedInfo> {
   uniqueVideos.sort((a, b) => (b.height * b.width || b.height) - (a.height * a.width || a.height));
 
   const limitedVideos = uniqueVideos.slice(0, 6);
-  const sizes = await Promise.all(limitedVideos.map((v) => headContentLength(v.url)));
+  const sizes = await Promise.all(
+    limitedVideos.map((v, idx) => (idx < 4 ? headContentLength(v.url) : Promise.resolve(null)))
+  );
 
   const formats: ThreadsFormatCandidate[] = limitedVideos.map((v, idx) => {
     const h = v.height || selected!.height || 0;
@@ -930,6 +1042,47 @@ function getQualityMode(formatId: string): QualityMode {
   return "original";
 }
 
+async function hasMp4Faststart(filePath: string): Promise<boolean> {
+  let handle: fsp.FileHandle | null = null;
+  try {
+    const stat = await fsp.stat(filePath);
+    const totalSize = stat.size;
+    if (totalSize < 16) return false;
+    handle = await fsp.open(filePath, "r");
+    const header = Buffer.alloc(16);
+    let offset = 0;
+    let boxesScanned = 0;
+    while (offset + 8 <= totalSize && boxesScanned < 32) {
+      boxesScanned += 1;
+      const { bytesRead } = await handle.read(header, 0, 16, offset);
+      if (bytesRead < 8) break;
+      const size32 = header.readUInt32BE(0);
+      const boxType = header.toString("ascii", 4, 8);
+      if (boxType === "moov") return true;
+      if (boxType === "mdat") return false;
+      let boxSize = size32;
+      if (size32 === 1) {
+        if (bytesRead < 16) break;
+        const bigSize = header.readBigUInt64BE(8);
+        if (bigSize < 16n || bigSize > BigInt(Number.MAX_SAFE_INTEGER)) break;
+        boxSize = Number(bigSize);
+      } else if (size32 === 0) {
+        break;
+      } else if (size32 < 8) {
+        break;
+      }
+      offset += boxSize;
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => {});
+    }
+  }
+}
+
 async function ensureMobileCompatibleMp4(
   inputPath: string,
   tmpdir: string,
@@ -975,6 +1128,18 @@ async function ensureMobileCompatibleMp4(
   const audioCompatible =
     !needsScale &&
     (!probe.audioCodec || probe.audioCodec === "aac" || probe.audioCodec === "mp3");
+
+  const inputExt = path.extname(inputPath).toLowerCase();
+  const isMp4Container = inputExt === ".mp4" || inputExt === ".m4v";
+  const isAlreadyFaststartReady =
+    isMp4Container &&
+    !needsScale &&
+    (isH264Copyable || (isHevcCopyable && probe.videoTag === "hvc1")) &&
+    audioCompatible &&
+    (await hasMp4Faststart(inputPath));
+  if (isAlreadyFaststartReady) {
+    return inputPath;
+  }
 
   const inputStat = await fsp.stat(inputPath).catch(() => null);
 
@@ -1570,6 +1735,139 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
+function isDirectProgressiveMp4Candidate(fmt: RawYtDlpFormat, rawUrl?: string): boolean {
+  const mediaUrl = typeof fmt.url === "string" ? fmt.url.trim() : "";
+  if (!mediaUrl.startsWith("http://") && !mediaUrl.startsWith("https://")) return false;
+  if (fmt.has_drm || (Array.isArray(fmt.fragments) && fmt.fragments.length > 0) || fmt.manifest_url) return false;
+  const proto = String(fmt.protocol || "").toLowerCase();
+  if (proto && proto !== "https" && proto !== "http") return false;
+  if (/\.m3u8(?:$|\?)|\.mpd(?:$|\?)/i.test(mediaUrl)) return false;
+
+  const isSnapchat = isSnapchatUrl(rawUrl);
+  const rawExt = String(fmt.ext || "").toLowerCase();
+  const ext = normalizeFormatExt(rawExt, isSnapchat);
+  if (ext !== "mp4" && ext !== "m4v") return false;
+
+  const vc = String(fmt.vcodec || "").toLowerCase();
+  const ac = String(fmt.acodec || "").toLowerCase();
+  const hasVideo = Boolean(vc && vc !== "none") || ((isSnapchat || rawExt === "irzxsoy") && vc !== "none");
+  const hasAudio = Boolean(ac && ac !== "none") || (!vc && (isSnapchat || rawExt === "irzxsoy"));
+  return hasVideo && hasAudio;
+}
+
+function resolveDirectProgressiveDownload(
+  probeInfo: RawYtDlpInfo | null,
+  formatId: string,
+  pageUrl: string
+): { directUrl: string; headers?: Record<string, string> } | null {
+  if (!probeInfo || resolveCookieFile() || resolveProxyUrl()) return null;
+  const rawFormats = probeInfo.formats || [];
+
+  const toResult = (fmt: RawYtDlpFormat | RawYtDlpInfo) => {
+    const directUrl = String(fmt.url || "").trim();
+    const check = validateUrl(directUrl);
+    if (!check.ok) return null;
+    const mergedHeaders: Record<string, string> = {
+      ...(probeInfo.http_headers || {}),
+      ...("http_headers" in fmt && fmt.http_headers ? fmt.http_headers : {}),
+    };
+    return {
+      directUrl: check.url,
+      headers: Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined,
+    };
+  };
+
+  if (rawFormats.length === 0 && probeInfo.url) {
+    const proto = String(probeInfo.protocol || "").toLowerCase();
+    const ext = normalizeFormatExt(String(probeInfo.ext || "").toLowerCase(), isSnapchatUrl(pageUrl));
+    if (
+      (ext === "mp4" || ext === "m4v") &&
+      (!proto || proto === "https" || proto === "http") &&
+      !/\.m3u8(?:$|\?)|\.mpd(?:$|\?)/i.test(probeInfo.url)
+    ) {
+      return toResult(probeInfo);
+    }
+    return null;
+  }
+
+  if (formatId !== "best" && formatId !== "hd" && formatId !== "sd") {
+    const exact = rawFormats.find((f) => String(f.format_id) === formatId);
+    if (exact && isDirectProgressiveMp4Candidate(exact, pageUrl)) {
+      return toResult(exact);
+    }
+    return null;
+  }
+
+  const progressive = rawFormats
+    .filter((f) => isDirectProgressiveMp4Candidate(f, pageUrl))
+    .map((f) => {
+      const h = typeof f.height === "number" ? f.height : 0;
+      const w = typeof f.width === "number" ? f.width : 0;
+      const shortSide = getFormatShortSide(w, h);
+      const vc = String(f.vcodec || "").toLowerCase();
+      const ac = String(f.acodec || "").toLowerCase();
+      const isH264 = vc.startsWith("avc1") || vc.startsWith("h264") ? 1 : 0;
+      const isAac = ac.startsWith("mp4a") || ac.startsWith("aac") ? 1 : 0;
+      const tbr = Number(f.tbr ?? f.vbr ?? 0) || 0;
+      return { fmt: f, shortSide, isH264, isAac, tbr };
+    });
+
+  if (progressive.length === 0) return null;
+
+  // Ensure a higher-resolution split stream doesn't exist when progressive is missing the target tier
+  const hasAnySplitVideo = rawFormats.some((f) => {
+    const vc = String(f.vcodec || "").toLowerCase();
+    const ac = String(f.acodec || "").toLowerCase();
+    return Boolean(vc && vc !== "none") && (!ac || ac === "none");
+  });
+
+  if (formatId === "hd") {
+    const exact720 = progressive
+      .filter((c) => c.shortSide === 720)
+      .sort((a, b) => b.isH264 - a.isH264 || b.isAac - a.isAac || b.tbr - a.tbr)[0];
+    if (exact720) return toResult(exact720.fmt);
+    if (!hasAnySplitVideo) {
+      const hdRange = progressive
+        .filter((c) => c.shortSide >= 720 && c.shortSide <= 1080)
+        .sort((a, b) => a.shortSide - b.shortSide || b.isH264 - a.isH264 || b.tbr - a.tbr)[0];
+      if (hdRange) return toResult(hdRange.fmt);
+      const fallback = progressive
+        .filter((c) => c.shortSide <= 1080)
+        .sort((a, b) => b.shortSide - a.shortSide || b.isH264 - a.isH264 || b.tbr - a.tbr)[0];
+      if (fallback) return toResult(fallback.fmt);
+    }
+    return null;
+  }
+
+  if (formatId === "sd") {
+    const sdRange = progressive
+      .filter((c) => c.shortSide >= 360 && c.shortSide <= 480)
+      .sort((a, b) => b.isH264 - a.isH264 || b.isAac - a.isAac || b.shortSide - a.shortSide || b.tbr - a.tbr)[0];
+    if (sdRange) return toResult(sdRange.fmt);
+    if (!hasAnySplitVideo) {
+      const belowSd = progressive
+        .filter((c) => c.shortSide > 0 && c.shortSide <= 540)
+        .sort((a, b) => b.shortSide - a.shortSide || b.isH264 - a.isH264 || b.tbr - a.tbr)[0];
+      if (belowSd) return toResult(belowSd.fmt);
+    }
+    return null;
+  }
+
+  // "best": only direct-fetch if no split video stream has higher resolution
+  const maxSplitSide = rawFormats.reduce((max, f) => {
+    const vc = String(f.vcodec || "").toLowerCase();
+    if (!vc || vc === "none") return max;
+    return Math.max(max, getFormatShortSide(f.width || 0, f.height || 0));
+  }, 0);
+  const topProgressive = [...progressive].sort(
+    (a, b) => b.shortSide - a.shortSide || b.isH264 - a.isH264 || b.isAac - a.isAac || b.tbr - a.tbr
+  )[0];
+  if (topProgressive && topProgressive.shortSide >= maxSplitSide) {
+    return toResult(topProgressive.fmt);
+  }
+  return null;
+}
+
 async function downloadDirectStreamWithProgress(
   mediaUrl: string,
   destPath: string,
@@ -1580,24 +1878,56 @@ async function downloadDirectStreamWithProgress(
     etaSeconds: number | null;
     percent: number | null;
   }) => void,
-  isAborted?: () => boolean
+  isAborted?: () => boolean,
+  extraHeaders?: Record<string, string>,
+  timeoutMs = 60_000
 ): Promise<void> {
+  const headers: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (compatible; Vidiporter/1.0)",
+    ...(extraHeaders || {}),
+  };
+  if (mediaUrl.includes("threads") || (!extraHeaders?.Referer && !extraHeaders?.referer)) {
+    headers.Referer = "https://www.threads.com/";
+  }
+
   const resp = await fetch(mediaUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; Vidiporter/1.0)",
-      "Referer": "https://www.threads.com/",
-    },
+    headers,
     redirect: "follow",
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!resp.ok || !resp.body) {
-    throw new Error(`Failed to download Threads media stream (HTTP ${resp.status}).`);
+    throw new Error(`Failed to download media stream (HTTP ${resp.status}).`);
+  }
+
+  const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("text/html") || contentType.includes("application/json")) {
+    throw new Error("Upstream returned non-media response.");
   }
 
   const totalLen = Number(resp.headers.get("content-length") || 0);
   const totalBytes = Number.isFinite(totalLen) && totalLen > 0 ? totalLen : null;
   const reader = resp.body.getReader();
-  const handle = await fsp.open(destPath, "w");
+  const writeStream = fs.createWriteStream(destPath, { highWaterMark: 512 * 1024 });
+  let streamErr: Error | null = null;
+  writeStream.on("error", (err) => {
+    streamErr = err;
+  });
+
+  const writeChunk = (chunk: Uint8Array): Promise<void> =>
+    new Promise((resolve, reject) => {
+      if (streamErr) {
+        reject(streamErr);
+        return;
+      }
+      const ok = writeStream.write(chunk);
+      if (ok) {
+        resolve();
+      } else {
+        writeStream.once("drain", resolve);
+        writeStream.once("error", reject);
+      }
+    });
+
   let downloadedBytes = 0;
   const startedAt = Date.now();
   let lastEmit = 0;
@@ -1611,7 +1941,7 @@ async function downloadDirectStreamWithProgress(
       const { done, value } = await reader.read();
       if (done) break;
       if (value && value.byteLength > 0) {
-        await handle.write(value);
+        await writeChunk(value);
         downloadedBytes += value.byteLength;
         const now = Date.now();
         if (onProgress && now - lastEmit >= 120) {
@@ -1627,6 +1957,14 @@ async function downloadDirectStreamWithProgress(
         }
       }
     }
+    await new Promise<void>((resolve, reject) => {
+      if (streamErr) {
+        reject(streamErr);
+        return;
+      }
+      writeStream.end(() => resolve());
+      writeStream.once("error", reject);
+    });
     if (onProgress) {
       const elapsedSec = Math.max(0.1, (Date.now() - startedAt) / 1000);
       onProgress({
@@ -1637,8 +1975,9 @@ async function downloadDirectStreamWithProgress(
         percent: 100,
       });
     }
-  } finally {
-    await handle.close();
+  } catch (err) {
+    writeStream.destroy();
+    throw err;
   }
 }
 
@@ -1676,7 +2015,7 @@ async function runDownloadJob(job: DownloadJob, url: string, formatId: string): 
     let resolvedTitle = "vidiporter_video";
 
     if (isThreadsUrl(url)) {
-      const threadsInfo = await extractThreadsInfo(url);
+      const threadsInfo = await fetchThreadsInfoCached(url);
       if (job.aborted) return;
 
       resolvedTitle = threadsInfo.title || "vidiporter_video";
@@ -1691,34 +2030,64 @@ async function runDownloadJob(job: DownloadJob, url: string, formatId: string): 
       notifyJobListeners(job);
 
       rawPath = path.join(job.tmpdir, "video.mp4");
-      await downloadDirectStreamWithProgress(
-        chosen.directUrl,
-        rawPath,
-        (p) => {
-          if (job.aborted) return;
-          job.stage = "downloading";
-          job.downloadedBytes = p.downloadedBytes;
-          job.totalBytes = p.totalBytes;
-          job.speedBytes = p.speedBytes;
-          job.etaSeconds = p.etaSeconds;
-          job.percent = p.percent;
-          notifyJobListeners(job);
-        },
-        () => job.aborted
-      );
+      try {
+        await downloadDirectStreamWithProgress(
+          chosen.directUrl,
+          rawPath,
+          (p) => {
+            if (job.aborted) return;
+            job.stage = "downloading";
+            job.downloadedBytes = p.downloadedBytes;
+            job.totalBytes = p.totalBytes;
+            job.speedBytes = p.speedBytes;
+            job.etaSeconds = p.etaSeconds;
+            job.percent = p.percent;
+            notifyJobListeners(job);
+          },
+          () => job.aborted
+        );
+      } catch (err) {
+        if (job.aborted) return;
+        // Retry once with a fresh Threads extraction if cached CDN link expired
+        invalidateExtractionCache(url);
+        const freshThreads = await fetchThreadsInfoCached(url, true);
+        if (job.aborted) return;
+        resolvedTitle = freshThreads.title || resolvedTitle;
+        const freshChosen = pickThreadsFormat(freshThreads.formats, formatId);
+        if (!freshChosen || !freshChosen.directUrl) throw err;
+        await fsp.rm(rawPath, { force: true }).catch(() => {});
+        await downloadDirectStreamWithProgress(
+          freshChosen.directUrl,
+          rawPath,
+          (p) => {
+            if (job.aborted) return;
+            job.stage = "downloading";
+            job.downloadedBytes = p.downloadedBytes;
+            job.totalBytes = p.totalBytes;
+            job.speedBytes = p.speedBytes;
+            job.etaSeconds = p.etaSeconds;
+            job.percent = p.percent;
+            notifyJobListeners(job);
+          },
+          () => job.aborted
+        );
+      }
     } else {
       const bin = await ensureYtDlpBinary();
       if (job.aborted) return;
 
       const baseArgs = getBaseYtDlpArgs(url);
       const isPresetFormat = formatId === "best" || formatId === "hd" || formatId === "sd";
-      let probeInfo: RawYtDlpInfo | null = null;
-      if (!isPresetFormat) {
-        probeInfo = unwrapInfo(await runYtDlpJson(bin, [...baseArgs, "--dump-single-json", url]));
+      let cachedRawInfo = getCachedYtDlpRawInfo(url);
+      let probeInfo: RawYtDlpInfo | null = cachedRawInfo ? unwrapInfo(cachedRawInfo) : null;
+
+      if (!isPresetFormat && !probeInfo) {
+        cachedRawInfo = await fetchYtDlpInfoCached(url);
         if (job.aborted) return;
-        if (probeInfo.title) {
-          resolvedTitle = probeInfo.title;
-        }
+        probeInfo = unwrapInfo(cachedRawInfo);
+      }
+      if (probeInfo?.title) {
+        resolvedTitle = probeInfo.title;
       }
 
       const formatSpec = buildFormatSpec(probeInfo, formatId);
@@ -1726,69 +2095,131 @@ async function runDownloadJob(job: DownloadJob, url: string, formatId: string): 
       job.percent = 0;
       notifyJobListeners(job);
 
-      const outtmpl = path.join(job.tmpdir, "video.%(ext)s");
-      const progressArgs = [
-        ...baseArgs,
-        "--progress",
-        "--newline",
-        "--progress-delta",
-        "0.25",
-        "--progress-template",
-        "download:__VIDIPORTER_DL__|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s",
-        "--progress-template",
-        "postprocess:__VIDIPORTER_PP__|%(progress.status)s|%(progress.postprocessor)s",
-        "-S",
-        buildFormatSortArg(formatId),
-        "-f",
-        formatSpec,
-        "--merge-output-format",
-        "mp4/mkv",
-        ...(isPresetFormat ? ["--write-info-json"] : []),
-        "-o",
-        outtmpl,
-        url,
-      ];
-
-      await runYtDlpDownload(bin, progressArgs, {
-        registerChild: (child) => {
-          job.activeChild = child;
-        },
-        onDownloadProgress: (p) => {
+      let directSucceeded = false;
+      const directCandidate = resolveDirectProgressiveDownload(probeInfo, formatId, url);
+      if (directCandidate) {
+        const directTarget = path.join(job.tmpdir, "video.mp4");
+        try {
+          await downloadDirectStreamWithProgress(
+            directCandidate.directUrl,
+            directTarget,
+            (p) => {
+              if (job.aborted) return;
+              job.stage = "downloading";
+              job.downloadedBytes = p.downloadedBytes;
+              job.totalBytes = p.totalBytes;
+              job.speedBytes = p.speedBytes;
+              job.etaSeconds = p.etaSeconds;
+              job.percent = p.percent;
+              notifyJobListeners(job);
+            },
+            () => job.aborted,
+            directCandidate.headers,
+            30_000
+          );
+          const directStat = await fsp.stat(directTarget).catch(() => null);
+          if (directStat && directStat.size > 1024) {
+            rawPath = directTarget;
+            directSucceeded = true;
+          } else {
+            await fsp.rm(directTarget, { force: true }).catch(() => {});
+          }
+        } catch {
           if (job.aborted) return;
-          job.stage = "downloading";
-          job.downloadedBytes = p.downloadedBytes;
-          job.totalBytes = p.totalBytes;
-          job.speedBytes = p.speedBytes;
-          job.etaSeconds = p.etaSeconds;
-          job.percent = p.percent;
-          notifyJobListeners(job);
-        },
-        onPostprocess: () => {
-          if (job.aborted) return;
-          job.stage = "merging";
-          job.percent = null;
-          job.speedBytes = null;
-          job.etaSeconds = null;
-          notifyJobListeners(job);
-        },
-      });
-
-      if (job.aborted) return;
-
-      if (isPresetFormat) {
-        const jsonTitle = await readTitleFromInfoJson(job.tmpdir);
-        if (jsonTitle) resolvedTitle = jsonTitle;
+          await fsp.rm(directTarget, { force: true }).catch(() => {});
+        }
       }
 
-      const entries = await fsp.readdir(job.tmpdir);
-      const outputName = findDownloadedMediaFile(entries);
-      if (!outputName) {
-        throw new Error("Download finished but no output file was produced.");
-      }
+      if (!directSucceeded) {
+        if (job.aborted) return;
+        const outtmpl = path.join(job.tmpdir, "video.%(ext)s");
+        const fastArgs = getFastDownloadArgs();
+        const runWithTarget = async (cachedJsonPath: string | null) => {
+          const needInfoJson = isPresetFormat && !probeInfo?.title;
+          const progressArgs = [
+            ...baseArgs,
+            ...fastArgs,
+            "--progress",
+            "--newline",
+            "--progress-delta",
+            "0.25",
+            "--progress-template",
+            "download:__VIDIPORTER_DL__|%(progress.status)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s",
+            "--progress-template",
+            "postprocess:__VIDIPORTER_PP__|%(progress.status)s|%(progress.postprocessor)s",
+            "-S",
+            buildFormatSortArg(formatId),
+            "-f",
+            formatSpec,
+            "--merge-output-format",
+            "mp4/mkv",
+            ...(needInfoJson ? ["--write-info-json"] : []),
+            "-o",
+            outtmpl,
+            ...(cachedJsonPath ? ["--load-info-json", cachedJsonPath] : [url]),
+          ];
 
-      rawPath = path.resolve(job.tmpdir, outputName);
-      if (!rawPath.startsWith(job.tmpdir + path.sep)) {
-        throw new Error("Invalid output path.");
+          await runYtDlpDownload(bin, progressArgs, {
+            registerChild: (child) => {
+              job.activeChild = child;
+            },
+            onDownloadProgress: (p) => {
+              if (job.aborted) return;
+              job.stage = "downloading";
+              job.downloadedBytes = p.downloadedBytes;
+              job.totalBytes = p.totalBytes;
+              job.speedBytes = p.speedBytes;
+              job.etaSeconds = p.etaSeconds;
+              job.percent = p.percent;
+              notifyJobListeners(job);
+            },
+            onPostprocess: () => {
+              if (job.aborted) return;
+              job.stage = "merging";
+              job.percent = null;
+              job.speedBytes = null;
+              job.etaSeconds = null;
+              notifyJobListeners(job);
+            },
+          });
+        };
+
+        if (cachedRawInfo) {
+          const cachedJsonPath = path.join(job.tmpdir, ".vidiporter_cached_info.json");
+          await fsp.writeFile(cachedJsonPath, JSON.stringify(cachedRawInfo), "utf-8");
+          try {
+            await runWithTarget(cachedJsonPath);
+          } catch {
+            if (job.aborted) return;
+            // Fallback to live URL extraction if cached CDN URLs expired
+            invalidateExtractionCache(url);
+            const partialEntries = await fsp.readdir(job.tmpdir).catch(() => []);
+            await Promise.all(
+              partialEntries.map((name) => fsp.rm(path.join(job.tmpdir, name), { force: true }).catch(() => {}))
+            );
+            await runWithTarget(null);
+          }
+        } else {
+          await runWithTarget(null);
+        }
+
+        if (job.aborted) return;
+
+        if (isPresetFormat && !probeInfo?.title) {
+          const jsonTitle = await readTitleFromInfoJson(job.tmpdir);
+          if (jsonTitle) resolvedTitle = jsonTitle;
+        }
+
+        const entries = await fsp.readdir(job.tmpdir);
+        const outputName = findDownloadedMediaFile(entries);
+        if (!outputName) {
+          throw new Error("Download finished but no output file was produced.");
+        }
+
+        rawPath = path.resolve(job.tmpdir, outputName);
+        if (!rawPath.startsWith(job.tmpdir + path.sep)) {
+          throw new Error("Invalid output path.");
+        }
       }
     }
 
@@ -2286,7 +2717,7 @@ app.post("/api/info", async (req: Request, res: Response) => {
 
   try {
     if (isThreadsUrl(url)) {
-      const threadsInfo = await extractThreadsInfo(url);
+      const threadsInfo = await fetchThreadsInfoCached(url);
       res.json({
         title: threadsInfo.title,
         thumbnail: threadsInfo.thumbnail,
@@ -2307,8 +2738,7 @@ app.post("/api/info", async (req: Request, res: Response) => {
       return;
     }
 
-    const bin = await ensureYtDlpBinary();
-    const rawInfo = await runYtDlpJson(bin, [...getBaseYtDlpArgs(url), "--dump-single-json", url]);
+    const rawInfo = await fetchYtDlpInfoCached(url);
     const info = unwrapInfo(rawInfo);
 
     const rawFormats = info.formats || [];
@@ -2636,7 +3066,7 @@ app.post("/api/download", async (req: Request, res: Response) => {
     let resolvedTitle = "vidiporter_video";
 
     if (isThreadsUrl(url)) {
-      const threadsInfo = await extractThreadsInfo(url);
+      const threadsInfo = await fetchThreadsInfoCached(url);
       resolvedTitle = threadsInfo.title || "vidiporter_video";
       const chosen = pickThreadsFormat(threadsInfo.formats, formatId);
       if (!chosen || !chosen.directUrl) {
@@ -2645,54 +3075,115 @@ app.post("/api/download", async (req: Request, res: Response) => {
         return;
       }
       rawPath = path.join(tmpdir, "video.mp4");
-      await downloadDirectStreamWithProgress(chosen.directUrl, rawPath);
+      try {
+        await downloadDirectStreamWithProgress(chosen.directUrl, rawPath);
+      } catch (err) {
+        invalidateExtractionCache(url);
+        const freshThreads = await fetchThreadsInfoCached(url, true);
+        resolvedTitle = freshThreads.title || resolvedTitle;
+        const freshChosen = pickThreadsFormat(freshThreads.formats, formatId);
+        if (!freshChosen || !freshChosen.directUrl) throw err;
+        await fsp.rm(rawPath, { force: true }).catch(() => {});
+        await downloadDirectStreamWithProgress(freshChosen.directUrl, rawPath);
+      }
     } else {
       const bin = await ensureYtDlpBinary();
       const baseArgs = getBaseYtDlpArgs(url);
 
       const isPresetFormat = formatId === "best" || formatId === "hd" || formatId === "sd";
-      let probeInfo: RawYtDlpInfo | null = null;
-      if (!isPresetFormat) {
-        probeInfo = unwrapInfo(await runYtDlpJson(bin, [...baseArgs, "--dump-single-json", url]));
-        if (probeInfo.title) {
-          resolvedTitle = probeInfo.title;
-        }
+      let cachedRawInfo = getCachedYtDlpRawInfo(url);
+      let probeInfo: RawYtDlpInfo | null = cachedRawInfo ? unwrapInfo(cachedRawInfo) : null;
+      if (!isPresetFormat && !probeInfo) {
+        cachedRawInfo = await fetchYtDlpInfoCached(url);
+        probeInfo = unwrapInfo(cachedRawInfo);
+      }
+      if (probeInfo?.title) {
+        resolvedTitle = probeInfo.title;
       }
       const formatSpec = buildFormatSpec(probeInfo, formatId);
 
-      const outtmpl = path.join(tmpdir, "video.%(ext)s");
-      await runYtDlpDownload(bin, [
-        ...baseArgs,
-        "-S",
-        buildFormatSortArg(formatId),
-        "-f",
-        formatSpec,
-        "--merge-output-format",
-        "mp4/mkv",
-        ...(isPresetFormat ? ["--write-info-json"] : []),
-        "-o",
-        outtmpl,
-        url,
-      ]);
-
-      if (isPresetFormat) {
-        const jsonTitle = await readTitleFromInfoJson(tmpdir);
-        if (jsonTitle) resolvedTitle = jsonTitle;
+      let directSucceeded = false;
+      const directCandidate = resolveDirectProgressiveDownload(probeInfo, formatId, url);
+      if (directCandidate) {
+        const directTarget = path.join(tmpdir, "video.mp4");
+        try {
+          await downloadDirectStreamWithProgress(
+            directCandidate.directUrl,
+            directTarget,
+            undefined,
+            undefined,
+            directCandidate.headers,
+            30_000
+          );
+          const directStat = await fsp.stat(directTarget).catch(() => null);
+          if (directStat && directStat.size > 1024) {
+            rawPath = directTarget;
+            directSucceeded = true;
+          } else {
+            await fsp.rm(directTarget, { force: true }).catch(() => {});
+          }
+        } catch {
+          await fsp.rm(directTarget, { force: true }).catch(() => {});
+        }
       }
 
-      const entries = await fsp.readdir(tmpdir);
-      const outputName = findDownloadedMediaFile(entries);
-      if (!outputName) {
-        cleanup();
-        res.status(400).json({ error: "Download finished but no output file was produced." });
-        return;
-      }
+      if (!directSucceeded) {
+        const outtmpl = path.join(tmpdir, "video.%(ext)s");
+        const fastArgs = getFastDownloadArgs();
+        const runDirectYtDlp = async (cachedJsonPath: string | null) => {
+          const needInfoJson = isPresetFormat && !probeInfo?.title;
+          await runYtDlpDownload(bin, [
+            ...baseArgs,
+            ...fastArgs,
+            "-S",
+            buildFormatSortArg(formatId),
+            "-f",
+            formatSpec,
+            "--merge-output-format",
+            "mp4/mkv",
+            ...(needInfoJson ? ["--write-info-json"] : []),
+            "-o",
+            outtmpl,
+            ...(cachedJsonPath ? ["--load-info-json", cachedJsonPath] : [url]),
+          ]);
+        };
 
-      rawPath = path.resolve(tmpdir, outputName);
-      if (!rawPath.startsWith(tmpdir + path.sep)) {
-        cleanup();
-        res.status(400).json({ error: "Invalid output path." });
-        return;
+        if (cachedRawInfo) {
+          const cachedJsonPath = path.join(tmpdir, ".vidiporter_cached_info.json");
+          await fsp.writeFile(cachedJsonPath, JSON.stringify(cachedRawInfo), "utf-8");
+          try {
+            await runDirectYtDlp(cachedJsonPath);
+          } catch {
+            invalidateExtractionCache(url);
+            const partialEntries = await fsp.readdir(tmpdir).catch(() => []);
+            await Promise.all(
+              partialEntries.map((name) => fsp.rm(path.join(tmpdir, name), { force: true }).catch(() => {}))
+            );
+            await runDirectYtDlp(null);
+          }
+        } else {
+          await runDirectYtDlp(null);
+        }
+
+        if (isPresetFormat && !probeInfo?.title) {
+          const jsonTitle = await readTitleFromInfoJson(tmpdir);
+          if (jsonTitle) resolvedTitle = jsonTitle;
+        }
+
+        const entries = await fsp.readdir(tmpdir);
+        const outputName = findDownloadedMediaFile(entries);
+        if (!outputName) {
+          cleanup();
+          res.status(400).json({ error: "Download finished but no output file was produced." });
+          return;
+        }
+
+        rawPath = path.resolve(tmpdir, outputName);
+        if (!rawPath.startsWith(tmpdir + path.sep)) {
+          cleanup();
+          res.status(400).json({ error: "Invalid output path." });
+          return;
+        }
       }
     }
 
@@ -2721,4 +3212,5 @@ app.post("/api/download", async (req: Request, res: Response) => {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Vidiporter server running on http://0.0.0.0:${PORT}`);
+  void ensureYtDlpBinary().catch(() => {});
 });
